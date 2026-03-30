@@ -1,0 +1,41 @@
+{
+  "pipeline": "RAGPipeline\n  Chunker   : BasicChunker(chunk_size=512, chunk_overlap=0)\n  Embedder  : SentenceTransformerEmbedder(model='all-MiniLM-L6-v2', dim=384)\n  Retriever : FAISSRetriever(metric='cosine', indexed=5 chunks)\n  Reranker  : CrossEncoderReranker(model='cross-encoder/ms-marco-MiniLM-L-6-v2')\n  Generator : OllamaGenerator(model='llama3.2', temp=0.0)\n  Config    : retriever_top_k=10, reranker_top_k=2",
+  "dataset": "quick_eval",
+  "n_samples": 3,
+  "timestamp": "2026-03-30T21:17:36",
+  "total_elapsed_s": 10.61,
+  "config": {
+    "retriever_top_k": 10,
+    "reranker_top_k": 2
+  },
+  "stages": {
+    "embedding": {
+      "avg_latency_ms": 7.5350602467854815,
+      "p95_latency_ms": 10.050535202026367,
+      "throughput_qps": 132.71294020862118,
+      "dimension": 384
+    },
+    "retrieval": {
+      "avg_latency_ms": 1.668691635131836,
+      "p95_latency_ms": 5.006074905395508,
+      "k": 5,
+      "precision_at_k": 0.2,
+      "recall_at_k": 1.0,
+      "mrr": 1.0,
+      "hit_rate": 1.0
+    },
+    "reranking": {
+      "avg_latency_ms": 42.3280398050944,
+      "p95_latency_ms": 46.17166519165039,
+      "avg_rank_correlation": -0.3333333333333333,
+      "mrr_delta": 0.0
+    },
+    "generation": {
+      "avg_latency_ms": 1897.9382514953613,
+      "p95_latency_ms": 3916.144371032715,
+      "avg_bert_score": 0.8197949330012003,
+      "avg_rouge_l": 0.08751803751803751,
+      "avg_exact_match": 0.0
+    }
+  }
+}

@@ -1,0 +1,41 @@
+{
+  "pipeline": "RAGPipeline\n  Chunker   : BasicChunker(chunk_size=512, chunk_overlap=0)\n  Embedder  : SentenceTransformerEmbedder(model='all-MiniLM-L6-v2', dim=384)\n  Retriever : FAISSRetriever(metric='cosine', indexed=5 chunks)\n  Reranker  : PassthroughReranker()\n  Generator : OllamaGenerator(model='llama3.2', temp=0.0)\n  Config    : retriever_top_k=5, reranker_top_k=3",
+  "dataset": "quick_eval",
+  "n_samples": 3,
+  "timestamp": "2026-03-30T21:17:26",
+  "total_elapsed_s": 11.66,
+  "config": {
+    "retriever_top_k": 5,
+    "reranker_top_k": 3
+  },
+  "stages": {
+    "embedding": {
+      "avg_latency_ms": 7.698297500610352,
+      "p95_latency_ms": 10.040760040283203,
+      "throughput_qps": 129.8988510018892,
+      "dimension": 384
+    },
+    "retrieval": {
+      "avg_latency_ms": 0.0,
+      "p95_latency_ms": 0.0,
+      "k": 5,
+      "precision_at_k": 0.2,
+      "recall_at_k": 1.0,
+      "mrr": 1.0,
+      "hit_rate": 1.0
+    },
+    "reranking": {
+      "avg_latency_ms": 0.0,
+      "p95_latency_ms": 0.0,
+      "avg_rank_correlation": 1.0,
+      "mrr_delta": 0.0
+    },
+    "generation": {
+      "avg_latency_ms": 2153.2486279805503,
+      "p95_latency_ms": 4433.8014125823975,
+      "avg_bert_score": 0.8223152160644531,
+      "avg_rouge_l": 0.08666954892635827,
+      "avg_exact_match": 0.0
+    }
+  }
+}

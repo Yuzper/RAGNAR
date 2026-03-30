@@ -1,0 +1,8 @@
+pip install ollama
+
+Download Windows
+https://ollama.com/download/windows
+
+cmd
+/c/Users/$USERNAME/AppData/Local/Programs/Ollama/ollama.exe pull llama3.2
+

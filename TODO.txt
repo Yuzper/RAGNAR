@@ -1,0 +1,27 @@
+✅ Base
+✅ Chunker
+✅ Embedders
+Retrievers
+✅ Rerankers
+✅ Generators
+✅ Evaluate
+✅ Pipeline
+✅ Example
+
+
+Next Steps.
+ - has_retrieval_labels issue, chunk labels from dataset?
+ - Finally define metrics
+ - Visualisation for doc of each stage
+   and associated doc
+ - Knowledge Graph integration
+
+
+What makes this powerful is not just listing them, but combining them:
+
+Retrieval quality vs latency → is better retrieval worth the cost?
+Generation quality vs TTFT → does slower generation improve answers?
+Storage vs recall → does larger index actually help?
+
+Attention like text data viz for retreival, which parts was most imporant in ranking.
+How can we use this for future?
