@@ -33,7 +33,6 @@ class FAISSRetriever(BaseRetriever):
             self._index = faiss.IndexFlatL2(dimension)
 
     def add_documents(self, chunks: list[Chunk], embeddings: list[list[float]]) -> None:
-        import faiss
         vecs = np.array(embeddings, dtype=np.float32)
         if self.metric == "cosine":
             faiss.normalize_L2(vecs)
@@ -41,7 +40,6 @@ class FAISSRetriever(BaseRetriever):
         self._chunks.extend(chunks)
 
     def retrieve(self, query_embedding: list[float], top_k: int = 5) -> list[Chunk]:
-        import faiss
         vec = np.array([query_embedding], dtype=np.float32)
         if self.metric == "cosine":
             faiss.normalize_L2(vec)

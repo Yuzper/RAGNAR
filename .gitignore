@@ -4,6 +4,5 @@ __pycache__/
 .venv
 env/
 venv/
-
-
+psga_w100.zip
 

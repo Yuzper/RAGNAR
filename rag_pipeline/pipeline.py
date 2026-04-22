@@ -123,6 +123,7 @@ class RAGPipeline:
             "embedding_dim": len(q_embedding) if hasattr(q_embedding, "__len__") else None
         }
 
+# time.perf_counter()
         # 2. Retrieve
         t0 = time.time()
         retrieved = self.retriever.retrieve(q_embedding, top_k=self.config.retriever_top_k)
