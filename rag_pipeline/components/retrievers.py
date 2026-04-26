@@ -1,112 +1,176 @@
 """
-Retriever implementations.
+retrievers.py
+-------------
+Retrieval algorithm implementations. Each retriever:
+  - Takes a BaseVectorStore at construction time
+  - Implements only the search algorithm
+  - Does NOT own any data or persistence
 
-Available:
-  - FAISSRetriever    (in-memory, no persistence, great for experiments)
-  - ChromaRetriever   (persistent on disk, good for larger corpora)
+Available retrievers
+--------------------
+  DenseRetriever    cosine / inner-product search via the store
+  BM25Retriever     sparse keyword search over store.chunks (no embeddings)
+  HybridRetriever   weighted combination of dense + BM25 (RRF fusion)
+
+Swapping retrievers on the same store
+--------------------------------------
+    store = FAISSStore.load("indexes/wiki_100k")
+
+    dense  = DenseRetriever(store)
+    sparse = BM25Retriever(store)
+    hybrid = HybridRetriever(store, alpha=0.5)
+
+    # All three search the same index — no re-embedding needed
 """
 
-import numpy as np
-from .base import BaseRetriever, Chunk
+from .base import BaseRetriever, BaseVectorStore, Chunk
 
 
-class FAISSRetriever(BaseRetriever):
+# =====================================================================
+# DenseRetriever
+# =====================================================================
+
+class DenseRetriever(BaseRetriever):
     """
-    In-memory vector retriever using FAISS.
-    Install: pip install faiss-cpu
+    Dense vector search. Delegates entirely to store.search().
+    The store owns the index and the similarity computation.
     """
 
-    def __init__(self, dimension: int, metric: str = "cosine"):
-        """
-        Args:
-            dimension: Vector dimensionality (must match your embedder).
-            metric: "cosine" or "l2"
-        """
-        import faiss
-        self.dimension = dimension
-        self.metric = metric
-        self._chunks: list[Chunk] = []
+    def __init__(self, store: BaseVectorStore):
+        self.store = store
 
-        if metric == "cosine":
-            self._index = faiss.IndexFlatIP(dimension)  # inner product on normalised vecs = cosine
-        else:
-            self._index = faiss.IndexFlatL2(dimension)
+    def retrieve(self, query: str, query_embedding: list[float], top_k: int) -> list[Chunk]:
+        return self.store.search(query_embedding, top_k)
 
-    def add_documents(self, chunks: list[Chunk], embeddings: list[list[float]]) -> None:
-        vecs = np.array(embeddings, dtype=np.float32)
-        if self.metric == "cosine":
-            faiss.normalize_L2(vecs)
-        self._index.add(vecs) # type: ignore[call-arg]
-        self._chunks.extend(chunks)
+    def __repr__(self):
+        return f"DenseRetriever(store={self.store})"
 
-    def retrieve(self, query_embedding: list[float], top_k: int = 5) -> list[Chunk]:
-        vec = np.array([query_embedding], dtype=np.float32)
-        if self.metric == "cosine":
-            faiss.normalize_L2(vec)
-        scores, indices = self._index.search(vec, min(top_k, len(self._chunks))) # type: ignore[call-arg]
+
+# =====================================================================
+# BM25Retriever
+# =====================================================================
+
+class BM25Retriever(BaseRetriever):
+    """
+    Sparse keyword retrieval using BM25.
+    Does not use embeddings at all — operates on store.chunks text.
+
+    Install: pip install rank_bm25
+
+    Because BM25 is built over the chunk texts at query time (lazily),
+    it does not need the embedding index at all. This means you can
+    add BM25 retrieval to any store without re-embedding.
+    """
+
+    def __init__(self, store: BaseVectorStore):
+        self.store = store
+        self._bm25 = None
+        self._indexed_chunks: list[Chunk] = []
+
+    def _build_index(self) -> None:
+        """Build the BM25 index lazily on first retrieve call."""
+        from rank_bm25 import BM25Okapi
+        self._indexed_chunks = self.store.chunks
+        tokenised = [c.text.lower().split() for c in self._indexed_chunks]
+        self._bm25 = BM25Okapi(tokenised)
+        print(f"[BM25Retriever] Built index over {len(self._indexed_chunks)} chunks")
+
+    def retrieve(self, query: str, query_embedding: list[float], top_k: int) -> list[Chunk]:
+        # Rebuild if store has grown since last call
+        if self._bm25 is None or len(self._indexed_chunks) != self.store.size:
+            self._build_index()
+
+        scores = self._bm25.get_scores(query.lower().split())
+        top_indices = sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)[:top_k]
+
         results = []
-        for score, idx in zip(scores[0], indices[0]):
-            if idx == -1:
-                continue
-            chunk = self._chunks[idx]
-            chunk.score = float(score)
+        for idx in top_indices:
+            chunk = self._indexed_chunks[idx]
+            chunk.score = float(scores[idx])
             results.append(chunk)
         return results
 
-    def __len__(self):
-        return len(self._chunks)
+    def __repr__(self):
+        return f"BM25Retriever(store={self.store})"
+
+
+# =====================================================================
+# HybridRetriever
+# =====================================================================
+
+class HybridRetriever(BaseRetriever):
+    """
+    Hybrid dense + sparse retrieval using Reciprocal Rank Fusion (RRF).
+
+    For each query:
+      1. Dense retrieval via store.search()          → ranked list A
+      2. BM25 retrieval over store.chunks            → ranked list B
+      3. RRF fusion: score(d) = Σ 1 / (k + rank(d)) → final ranking
+
+    alpha controls the balance between dense and sparse:
+      alpha=1.0  → dense only  (equivalent to DenseRetriever)
+      alpha=0.0  → sparse only (equivalent to BM25Retriever)
+      alpha=0.5  → equal weight (default)
+
+    RRF is robust to score scale differences between dense and sparse
+    methods — it only uses rank positions, not raw scores.
+
+    Install: pip install rank_bm25
+    """
+
+    def __init__(
+        self,
+        store: BaseVectorStore,
+        alpha: float = 0.5,
+        rrf_k: int = 60,
+        dense_candidates: int | None = None,
+        sparse_candidates: int | None = None,
+    ):
+        """
+        store             : shared vector store
+        alpha             : weight of dense results in fusion (0–1)
+        rrf_k             : RRF constant (higher = less penalty for lower ranks)
+        dense_candidates  : how many dense results to fetch before fusion
+                            (default: 2 × top_k)
+        sparse_candidates : how many BM25 results to fetch before fusion
+                            (default: 2 × top_k)
+        """
+        self.store = store
+        self.alpha = alpha
+        self.rrf_k = rrf_k
+        self.dense_candidates = dense_candidates
+        self.sparse_candidates = sparse_candidates
+        self._bm25_retriever = BM25Retriever(store)
+
+    def retrieve(self, query: str, query_embedding: list[float], top_k: int) -> list[Chunk]:
+        n_dense  = self.dense_candidates  or top_k * 2
+        n_sparse = self.sparse_candidates or top_k * 2
+
+        dense_results  = self.store.search(query_embedding, n_dense)
+        sparse_results = self._bm25_retriever.retrieve(query, query_embedding, n_sparse)
+
+        # RRF fusion
+        rrf_scores: dict[str, float] = {}
+        chunk_map:  dict[str, Chunk] = {}
+
+        for rank, chunk in enumerate(dense_results, start=1):
+            rrf_scores[chunk.chunk_id] = rrf_scores.get(chunk.chunk_id, 0) + \
+                self.alpha * (1.0 / (self.rrf_k + rank))
+            chunk_map[chunk.chunk_id] = chunk
+
+        for rank, chunk in enumerate(sparse_results, start=1):
+            rrf_scores[chunk.chunk_id] = rrf_scores.get(chunk.chunk_id, 0) + \
+                (1 - self.alpha) * (1.0 / (self.rrf_k + rank))
+            chunk_map[chunk.chunk_id] = chunk
+
+        ranked = sorted(rrf_scores.items(), key=lambda x: x[1], reverse=True)[:top_k]
+        results = []
+        for chunk_id, score in ranked:
+            chunk = chunk_map[chunk_id]
+            chunk.score = score
+            results.append(chunk)
+        return results
 
     def __repr__(self):
-        return f"FAISSRetriever(metric='{self.metric}', indexed={len(self._chunks)} chunks)"
+        return f"HybridRetriever(store={self.store}, alpha={self.alpha}, rrf_k={self.rrf_k})"
 
-
-class ChromaRetriever(BaseRetriever):
-    """
-    Persistent vector retriever using ChromaDB.
-    Persists to disk — useful when your corpus is large and don't want to re-embed on every run.
-    """
-
-    def __init__(self, collection_name: str = "rag", persist_dir: str = "./chroma_db"):
-        import chromadb
-        self._client = chromadb.PersistentClient(path=persist_dir)
-        self._collection = self._client.get_or_create_collection(
-            name=collection_name,
-            metadata={"hnsw:space": "cosine"},
-        )
-        self._id_counter = self._collection.count()
-
-    def add_documents(self, chunks: list[Chunk], embeddings: list[list[float]]) -> None:
-        ids = [str(self._id_counter + i) for i in range(len(chunks))]
-        self._collection.add(
-            ids=ids,
-            embeddings=np.array(embeddings, dtype=np.float32),
-            documents=[c.text for c in chunks],
-            metadatas=[c.metadata for c in chunks],
-        )
-        self._id_counter += len(chunks)
-
-    # Returns a list of Chunks with updated scores based on similarity to the query embedding.
-    def retrieve(self, query_embedding: list[float], top_k: int = 5) -> list[Chunk]:
-        results = self._collection.query(
-            query_embeddings=np.array([query_embedding], dtype=np.float32),
-            n_results=min(top_k, self._collection.count()),
-        )
-
-        documents = results["documents"]
-        metadatas = results["metadatas"]
-        distances = results["distances"]
-
-        if documents is None or metadatas is None or distances is None:
-            return []
-    
-        chunks = []
-        for text, meta, dist in zip(documents[0], metadatas[0], distances[0]):
-            chunks.append(Chunk(
-                text=text,
-                metadata=dict(meta),
-                score=1.0 - dist,
-            ))
-        return chunks
-
-    def __repr__(self):
-        return f"ChromaRetriever(collection='{self._collection.name}', indexed={self._collection.count()} chunks)"
