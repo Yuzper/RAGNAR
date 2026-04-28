@@ -8,7 +8,7 @@ from .components.base import (
 
 @dataclass
 class OfflineBuildTrace:
-    """Captures metrics from the offline build stage (chunking, embedding, indexing)."""
+    """Metrics from the offline build stage (chunking, embedding, indexing)."""
     n_passages:     int
     n_chunks:       int
     chunk_size_avg: float
@@ -19,7 +19,7 @@ class OfflineBuildTrace:
     total_ms:       float          # wall-clock total in ms
     chunks_per_sec: float          # embedding throughput
     rss_delta_mb:   float | None   # RSS memory increase (None if psutil unavailable)
- 
+
     def to_dict(self) -> dict:
         return {
             "n_passages":     self.n_passages,
@@ -43,7 +43,7 @@ class OfflineBuildTrace:
 @dataclass
 class RunTrace:
     query: str
-    retrieved_chunks: list[Chunk] = field(default_factory=list)
+    retrieved_chunks: list[Chunk] = field(default_factory=list) # each instance gets its own list
     reranked_chunks:  list[Chunk] = field(default_factory=list)
     answer: str = ""
     latency_ms: dict[str, float] = field(default_factory=dict) # dict with latency for each stage.
@@ -84,19 +84,19 @@ class RAGPipeline:
         run = RunTrace(query=question)
 
         # 1. Embed query
-        t0 = time.time()
+        t0 = time.perf_counter()
         q_embedding = self.embedder.embed_one(question)
-        run.latency_ms["embed"] = (time.time() - t0) * 1000
+        run.latency_ms["embed"] = (time.perf_counter() - t0) * 1000
         run.stage_meta["embed"] = {"embedding_dim": len(q_embedding)}
 
         # 2. Retrieve
-        t0 = time.time()
+        t0 = time.perf_counter()
         retrieved = self.retriever.retrieve(
             query=question,
             query_embedding=q_embedding,
             top_k=self.retriever.retriever_top_k,
         )
-        run.latency_ms["retrieve"] = (time.time() - t0) * 1000
+        run.latency_ms["retrieve"] = (time.perf_counter() - t0) * 1000
         run.retrieved_chunks = retrieved
         run.stage_meta["retrieve"] = {
             "retriever":      str(self.retriever.__class__.__name__),
@@ -105,9 +105,9 @@ class RAGPipeline:
         }
 
         # 3. Rerank
-        t0 = time.time()
+        t0 = time.perf_counter()
         reranked = self.reranker.rerank(question, retrieved, top_k=self.reranker.reranker_top_k)
-        run.latency_ms["rerank"] = (time.time() - t0) * 1000
+        run.latency_ms["rerank"] = (time.perf_counter() - t0) * 1000
         run.reranked_chunks = reranked
         run.stage_meta["rerank"] = {
             "top_k_requested": self.reranker.reranker_top_k,
@@ -115,9 +115,9 @@ class RAGPipeline:
         }
 
         # 4. Generate
-        t0 = time.time()
+        t0 = time.perf_counter()
         answer, gen_meta = self.generator.generate_with_meta(question, reranked)
-        run.latency_ms["generate"] = (time.time() - t0) * 1000
+        run.latency_ms["generate"] = (time.perf_counter() - t0) * 1000
         run.answer = answer
         run.stage_meta["generate"] = {
             "context_chunks":    len(reranked),

@@ -59,10 +59,9 @@ def rouge_l(prediction: str, gold: str) -> float:
 def bert_score_batch(predictions: list[str], references: list[str]) -> list[float]:
     """
     BERTScore F1 for a batch of (prediction, reference) pairs.
-    Requires: pip install bert-score
     Call with all predictions at once — the model runs once for the whole batch.
     """
-    _, _, f1 = _bert_score(predictions, references, lang="en", verbose=False, device="cpu")
+    _, _, f1 = _bert_score(predictions, references, lang="en", verbose=False, device=None)
     return f1.tolist()  # type: ignore[return-value]
 
 def tokens_per_second(completion_tokens: int | None, eval_duration_ns: int | None ) -> float | None:
