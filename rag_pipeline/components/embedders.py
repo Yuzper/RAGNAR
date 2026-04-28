@@ -1,26 +1,14 @@
-"""
-Embedder implementations.
-
-Available:
-  - SentenceTransformerEmbedder  (local, free, good default)
-"""
-
 from .base import BaseEmbedder
-
+from sentence_transformers import SentenceTransformer
 
 class SentenceTransformerEmbedder(BaseEmbedder):
     """
-    Local embedder using sentence-transformers.
-    Install: pip install sentence-transformers
-
-    Good default models:
       - "all-MiniLM-L6-v2"      fast, 384-dim
       - "all-mpnet-base-v2"     balanced, 768-dim
       - "BAAI/bge-large-en-v1.5" strong, 1024-dim
     """
 
     def __init__(self, model_name: str = "all-MiniLM-L6-v2"):
-        from sentence_transformers import SentenceTransformer
         self.model = SentenceTransformer(model_name)
         self._model_name = model_name
         self._dim = self.model.get_sentence_embedding_dimension()

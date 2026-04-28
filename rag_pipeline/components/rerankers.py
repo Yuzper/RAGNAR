@@ -1,19 +1,13 @@
-"""
-Reranker implementations.
-
-Available:
-  - PassthroughReranker    (no-op, baseline — keeps retriever order)
-  - CrossEncoderReranker   (local cross-encoder, highest quality)
-  - CohereReranker         (API-based, very strong)
-"""
-
 from .base import BaseReranker, Chunk
-
+from sentence_transformers import CrossEncoder
 
 class PassthroughReranker(BaseReranker):
     """
     Returns chunks in the same order as the retriever Baseline.
     """
+    def __init__(self):
+        super().__init__(reranker_top_k=5)
+
     def rerank(self, query: str, chunks: list[Chunk], top_k: int = 5) -> list[Chunk]:
         return chunks[:top_k]
     
@@ -22,18 +16,8 @@ class PassthroughReranker(BaseReranker):
 
 
 class CrossEncoderReranker(BaseReranker):
-    """
-    Local cross-encoder reranker using sentence-transformers.
-    Install: pip install sentence-transformers
-
-    Models:
-      - "cross-encoder/ms-marco-MiniLM-L-6-v2"   fast
-      - "cross-encoder/ms-marco-electra-base"     balanced
-      - "BAAI/bge-reranker-large"                 strongest local option
-    """
-
-    def __init__(self, model_name: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"):
-        from sentence_transformers import CrossEncoder
+    def __init__(self, model_name: str = "cross-encoder/ms-marco-MiniLM-L-6-v2", reranker_top_k: int = 5):
+        super().__init__(reranker_top_k)
         self.model = CrossEncoder(model_name)
         self._model_name = model_name
 
