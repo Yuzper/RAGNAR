@@ -12,6 +12,7 @@ Retrievers
 Next Steps.
  - has_retrieval_labels issue, chunk labels from dataset?
  - Finally define metrics
+ - Update readme.md
  - Visualisation for doc of each stage
    and associated doc
  - Knowledge Graph integration

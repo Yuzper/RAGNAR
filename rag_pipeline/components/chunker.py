@@ -1,11 +1,11 @@
-
 from dataclasses import dataclass
 from .base import BaseChunker, Chunk
 
-CHUNK_SIZE: int = 512         # characters per chunk when using index_texts()
-CHUNK_OVERLAP: int = 0       # character overlap between consecutive chunks
+CHUNK_SIZE: int = 512   # characters per chunk
+CHUNK_OVERLAP: int = 0  # character overlap between consecutive chunks
 
-@dataclass
+
+@dataclass # Not paragraph aware, just fixed-size CHARACTER chunker. NO sense of sentences either.
 class BasicChunker(BaseChunker):
     chunk_size: int = CHUNK_SIZE
     chunk_overlap: int = CHUNK_OVERLAP
@@ -32,10 +32,36 @@ class BasicChunker(BaseChunker):
                     break
                 start += size - overlap
         return chunks
-    
-def __repr__(self):
+
+    def __repr__(self):  # was incorrectly at module scope before
         return f"BasicChunker(chunk_size={self.chunk_size}, chunk_overlap={self.chunk_overlap})"
 
 
+class PreChunkedChunker(BaseChunker):
+    """
+    Pass-through chunker for the DPR psgs_w100 Wikipedia dump.
+    Each string in `texts` is treated as one final chunk, no splitting is done, metadata is preserved.
+    """
 
-
+    def chunk_text(self, texts: list[str], metadatas: list[dict] | None = None) -> list[Chunk]:
+        metadatas = metadatas or [{} for _ in texts]
+        chunks = []
+        for idx, (text, meta) in enumerate(zip(texts, metadatas)):
+            text = text.strip()
+            if not text:
+                continue
+ 
+            raw_id = meta.get("id") or meta.get("passage_id")
+            chunk_id = f"passage{raw_id}" if raw_id is not None else f"passage{idx}"
+ 
+            chunks.append(Chunk(
+                text=text,
+                metadata=meta,
+                chunk_id=chunk_id,
+            ))
+        return chunks
+ 
+    def __repr__(self):
+        return "PreChunkedChunker()"
+    
+    

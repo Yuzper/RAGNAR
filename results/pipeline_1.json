@@ -1,0 +1,50 @@
+{
+  "pipeline": "RAGPipeline\n  Chunker   : BasicChunker(chunk_size=512, chunk_overlap=0)\n  Embedder  : SentenceTransformerEmbedder(model='all-MiniLM-L6-v2', dim=384)\n  Store     : FAISSDB(metric='cosine', size=303, dim=384)\n  Retriever : DenseRetriever(db=FAISSDB(metric='cosine', size=303, dim=384), retriever_top_k=20)\n  Reranker  : CrossEncoderReranker(model='cross-encoder/ms-marco-MiniLM-L-6-v2')\n  Generator : OllamaGenerator(model='llama3.2', temp=0.0)\nretriever_top_k=20\nreranker_top_k=5",
+  "dataset": "quick_eval",
+  "n_samples": 3,
+  "timestamp": "2026-04-28T17:34:37",
+  "total_elapsed_s": 11.94,
+  "config": {
+    "retriever_top_k": 20,
+    "reranker_top_k": 5
+  },
+  "stages": {
+    "embedding": {
+      "avg_latency_ms": 8.083740870157877,
+      "p95_latency_ms": 10.814666748046875,
+      "throughput_qps": 123.70510337505038,
+      "dimension": 384,
+      "avg_rss_delta_mb": null
+    },
+    "retrieval": {
+      "avg_latency_ms": 0.3325939178466797,
+      "p95_latency_ms": 0.9977817535400391,
+      "k": 20,
+      "precision_at_k": 0.016666666666666666,
+      "recall_at_k": 0.3333333333333333,
+      "mrr": 0.08333333333333333,
+      "hit_rate": 0.3333333333333333,
+      "avg_rss_delta_mb": null
+    },
+    "reranking": {
+      "avg_latency_ms": 295.32313346862793,
+      "p95_latency_ms": 330.9028148651123,
+      "mrr_before": 0.08333333333333333,
+      "mrr_after": 0.08333333333333333,
+      "mrr_delta": 0.0,
+      "avg_rss_delta_mb": null
+    },
+    "generation": {
+      "avg_latency_ms": 2299.4521458943686,
+      "p95_latency_ms": 5127.950429916382,
+      "avg_bert_score": 0.8411378463109335,
+      "avg_rouge_l": 0.043073701244615785,
+      "avg_exact_match": 0.0,
+      "avg_prompt_tokens": 172.33333333333334,
+      "avg_completion_tokens": 101.66666666666667,
+      "avg_tokens_per_sec": 88.55326342651875,
+      "avg_ttft_ms": 929.6751817067465,
+      "avg_rss_delta_mb": null
+    }
+  }
+}

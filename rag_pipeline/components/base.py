@@ -1,18 +1,3 @@
-"""
-Abstract base classes for all RAG pipeline components.
-Implement any of these to create a new swappable component.
-
-Store / Retriever split
------------------------
-BaseVectorStore  — owns the data: chunks, embeddings, persistence (save/load)
-BaseRetriever    — owns the search algorithm, holds a reference to a store
-
-This separation means:
-  • You embed and index a corpus once, save the store to disk
-  • You can swap the search algorithm (dense, BM25, hybrid) without re-embedding
-  • You can compare retrieval strategies on the exact same index
-"""
-
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any
@@ -53,24 +38,13 @@ class GenerationResult:
 
 
 # =====================================================================
-# BaseVectorStore  — storage + persistence
+# BaseVectorDataBase  — storage + persistence
 # =====================================================================
 
-class BaseVectorStore(ABC):
-    """
-    Owns chunks and their embeddings. Responsible for:
-      - Storing chunks and vectors (add)
-      - Persisting to / loading from disk (save / load)
-      - Exposing raw data to retrievers (chunks property)
-      - Dense vector search (search) — used by DenseRetriever
-
-    Does NOT own the search algorithm beyond basic dense similarity.
-    Higher-level retrieval strategies (BM25, hybrid) live in Retriever.
-    """
-
+class BaseVectorDataBase(ABC):
     @abstractmethod
     def add(self, chunks: list[Chunk], embeddings: list[list[float]]) -> None:
-        """Add chunks and their embeddings to the store."""
+        """Add chunks and their embeddings to the DB."""
 
     @abstractmethod
     def search(self, query_embedding: list[float], top_k: int) -> list[Chunk]:
@@ -81,17 +55,17 @@ class BaseVectorStore(ABC):
 
     @abstractmethod
     def save(self, path: str) -> None:
-        """Persist the store to disk so it can be reloaded without re-embedding."""
+        """Persist the DB to disk so it can be reloaded without re-embedding."""
 
     @classmethod
     @abstractmethod
-    def load(cls, path: str) -> "BaseVectorStore":
-        """Load a previously saved store from disk."""
+    def load(cls, path: str) -> "BaseVectorDataBase":
+        """Load a previously saved DB from disk."""
 
     @property
     @abstractmethod
     def chunks(self) -> list[Chunk]:
-        """All stored chunks in insertion order. Used by BM25Retriever."""
+        """All stored chunks in insertion order."""
 
     @property
     @abstractmethod
@@ -127,19 +101,9 @@ class BaseEmbedder(ABC):
 # =====================================================================
 
 class BaseRetriever(ABC):
-    """
-    Owns the search algorithm. Does NOT own storage.
-
-    Retriever is initialised with a BaseVectorStore and searches it.
-    Swapping the retriever on the same store lets you compare search
-    strategies (dense, BM25, hybrid) without re-embedding the corpus.
-
-    Subclasses
-    ----------
-    DenseRetriever   — cosine / inner-product search via the store
-    BM25Retriever    — sparse keyword search over store.chunks
-    HybridRetriever  — weighted combination of dense + BM25
-    """
+    @abstractmethod
+    def __init__(self, retriever_top_k: int):
+        self.retriever_top_k = retriever_top_k
 
     @abstractmethod
     def retrieve(self, query: str, query_embedding: list[float], top_k: int) -> list[Chunk]:
@@ -148,7 +112,7 @@ class BaseRetriever(ABC):
 
         Both query (str) and query_embedding (vector) are provided so
         that sparse retrievers can use the string and dense retrievers
-        can use the vector — without needing to call the embedder again.
+        can use the vector.
         """
 
 
@@ -157,6 +121,10 @@ class BaseRetriever(ABC):
 # =====================================================================
 
 class BaseReranker(ABC):
+    @abstractmethod
+    def __init__(self, reranker_top_k: int):
+        self.reranker_top_k = reranker_top_k
+
     @abstractmethod
     def rerank(self, query: str, chunks: list[Chunk], top_k: int = 5) -> list[Chunk]:
         """Return top_k chunks re-ordered by relevance to query."""
@@ -167,6 +135,27 @@ class BaseGenerator(ABC):
     def generate(self, query: str, chunks: list[Chunk]) -> str:
         """Generate an answer string."""
 
+    def generate_with_meta(self, query: str, chunks: list[Chunk]) -> tuple[str, dict]:
+        """
+        Generate an answer and return (answer, token_meta).
+
+        token_meta keys (all optional / None when unavailable):
+          prompt_tokens     - number of tokens in the prompt
+          completion_tokens - number of tokens generated
+          tokens_per_sec    - generation throughput
+          ttft_ms           - time-to-first-token in milliseconds
+
+        Default implementation calls generate() with no token tracking.
+        Override in subclasses that have access to this information
+        (e.g. OllamaGenerator via its streaming API).
+        """
+        return self.generate(query, chunks), {
+            "prompt_tokens":     None,
+            "completion_tokens": None,
+            "tokens_per_sec":    None,
+            "ttft_ms":           None,
+        }
+
     def build_prompt(self, query: str, chunks: list[Chunk]) -> str:
         context = "\n\n".join(f"[{i+1}] {c.text}" for i, c in enumerate(chunks))
         return (
@@ -175,3 +164,23 @@ class BaseGenerator(ABC):
             f"Context:\n{context}\n\n"
             f"Question: {query}\n\nAnswer:"
         )
+
+
+# =====================================================================
+# BaseKnowledgeLoader  — file reading + indexing
+# =====================================================================
+
+class BaseKnowledgeLoader(ABC):
+    def __init__(self, db: BaseVectorDataBase, embedder: BaseEmbedder, chunker: BaseChunker):
+        self.db = db
+        self.embedder = embedder
+        self.chunker = chunker
+
+    @abstractmethod
+    def load_and_index(self, file_path: str, batch_size: int = 128) -> BaseVectorDataBase:
+        """
+        Read a file, chunk it, embed it in batches, and add to the DB.
+        Returns the populated DB so callers can chain:
+            db = loader.load_and_index(path)
+        Build metrics are stored on self.last_build_stats after the call.
+        """

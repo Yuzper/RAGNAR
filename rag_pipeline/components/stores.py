@@ -1,47 +1,13 @@
-"""
-stores.py
----------
-Vector store implementations. Each store owns:
-  - The chunk list
-  - The embedding index
-  - Save / load (so you never need to re-embed the same corpus twice)
-
-Available stores
-----------------
-  FAISSStore    in-memory, saves to disk as .faiss + .pkl
-  ChromaStore   persistent ChromaDB collection
-
-Usage
------
-    store = FAISSStore(dimension=384, metric="cosine")
-    store.add(chunks, embeddings)
-    store.save("indexes/wiki_100k")
-
-    # Later run — skip re-embedding entirely
-    store = FAISSStore.load("indexes/wiki_100k")
-    retriever = DenseRetriever(store)
-"""
-
 import os
 import pickle
 import numpy as np
-from .base import BaseVectorStore, Chunk
-
+from .base import BaseVectorDataBase, Chunk
 
 # =====================================================================
-# FAISSStore
+# FAISSDB
 # =====================================================================
 
-class FAISSStore(BaseVectorStore):
-    """
-    In-memory vector store backed by FAISS.
-
-    Saves to two files:
-      {path}.faiss   — the FAISS index (vectors)
-      {path}.pkl     — the chunk list (text + metadata)
-
-    Install: pip install faiss-cpu
-    """
+class FAISSDB(BaseVectorDataBase):
 
     def __init__(self, dimension: int, metric: str = "cosine"):
         """
@@ -49,6 +15,7 @@ class FAISSStore(BaseVectorStore):
         metric    : "cosine" (default) or "l2"
         """
         import faiss
+        self._faiss = faiss
         self.dimension = dimension
         self.metric = metric
         self._chunks: list[Chunk] = []
@@ -59,14 +26,14 @@ class FAISSStore(BaseVectorStore):
             self._index = faiss.IndexFlatL2(dimension)
 
     # ------------------------------------------------------------------
-    # BaseVectorStore interface
+    # BaseVectorDB interface
     # ------------------------------------------------------------------
 
     def add(self, chunks: list[Chunk], embeddings: list[list[float]]) -> None:
         vecs = np.array(embeddings, dtype=np.float32)
         if self.metric == "cosine":
-            faiss.normalize_L2(vecs)
-        self._index.add(vecs)
+            self._faiss.normalize_L2(vecs)  # type: ignore[call-arg]
+        self._index.add(vecs)  # type: ignore[call-arg]
         self._chunks.extend(chunks)
 
     def search(self, query_embedding: list[float], top_k: int) -> list[Chunk]:
@@ -74,14 +41,21 @@ class FAISSStore(BaseVectorStore):
             return []
         vec = np.array([query_embedding], dtype=np.float32)
         if self.metric == "cosine":
-            faiss.normalize_L2(vec)
-        scores, indices = self._index.search(vec, min(top_k, len(self._chunks)))
+            self._faiss.normalize_L2(vec)  # type: ignore[call-arg]
+        scores, indices = self._index.search(vec, min(top_k, len(self._chunks)))  # type: ignore[call-arg]
         results = []
         for score, idx in zip(scores[0], indices[0]):
             if idx == -1:
                 continue
             chunk = self._chunks[idx]
-            chunk.score = float(score)
+            # Normalise so Chunk.score is always "higher = more similar" in [0, 1],
+            # matching ChromaDB's (1 - cosine_distance) convention.
+            #   cosine (IndexFlatIP on L2-normalised vecs) → [-1, 1] → map to [0, 1]
+            #   L2 (IndexFlatL2)                           → [0, ∞) → map to (0, 1]
+            if self.metric == "cosine":
+                chunk.score = (float(score) + 1.0) / 2.0
+            else:  # l2
+                chunk.score = 1.0 / (1.0 + float(score))
             results.append(chunk)
         return results
 
@@ -91,25 +65,26 @@ class FAISSStore(BaseVectorStore):
         Creates parent directories if needed.
         """
         os.makedirs(os.path.dirname(path) if os.path.dirname(path) else ".", exist_ok=True)
-        faiss.write_index(self._index, f"{path}.faiss")
+        self._faiss.write_index(self._index, f"{path}.faiss")
         with open(f"{path}.pkl", "wb") as f:
             pickle.dump({
                 "chunks":    self._chunks,
                 "dimension": self.dimension,
                 "metric":    self.metric,
             }, f)
-        print(f"[FAISSStore] Saved {len(self._chunks)} chunks → {path}.faiss / .pkl")
+        print(f"[FAISSDB] Saved {len(self._chunks)} chunks → {path}.faiss / .pkl")
 
     @classmethod
-    def load(cls, path: str) -> "FAISSStore":
+    def load(cls, path: str) -> "FAISSDB":
         """Load from {path}.faiss and {path}.pkl."""
+        import faiss
         with open(f"{path}.pkl", "rb") as f:
             meta = pickle.load(f)
-        store = cls(dimension=meta["dimension"], metric=meta["metric"])
-        store._index = faiss.read_index(f"{path}.faiss")
-        store._chunks = meta["chunks"]
-        print(f"[FAISSStore] Loaded {len(store._chunks)} chunks from {path}")
-        return store
+        DB = cls(dimension=meta["dimension"], metric=meta["metric"])
+        DB._index = faiss.read_index(f"{path}.faiss")
+        DB._chunks = meta["chunks"]
+        print(f"[FAISSDB] Loaded {len(DB._chunks)} chunks from {path}")
+        return DB
 
     @property
     def chunks(self) -> list[Chunk]:
@@ -120,16 +95,16 @@ class FAISSStore(BaseVectorStore):
         return len(self._chunks)
 
     def __repr__(self):
-        return f"FAISSStore(metric='{self.metric}', size={self.size}, dim={self.dimension})"
+        return f"FAISSDB(metric='{self.metric}', size={self.size}, dim={self.dimension})"
 
 
 # =====================================================================
-# ChromaStore
+# ChromaDB
 # =====================================================================
 
-class ChromaStore(BaseVectorStore):
+class ChromaDB(BaseVectorDataBase):
     """
-    Persistent vector store backed by ChromaDB.
+    Persistent vector DB backed by ChromaDB.
     Data is written to disk automatically — survives process restarts
     without calling save() explicitly.
 
@@ -190,7 +165,7 @@ class ChromaStore(BaseVectorStore):
     def save(self, path: str) -> None:
         """
         ChromaDB already persists automatically to persist_dir.
-        This method saves a small metadata file for consistency with FAISSStore.
+        This method saves a small metadata file for consistency with FAISSDB.
         """
         os.makedirs(os.path.dirname(path) if os.path.dirname(path) else ".", exist_ok=True)
         with open(f"{path}.chroma_meta.pkl", "wb") as f:
@@ -198,18 +173,18 @@ class ChromaStore(BaseVectorStore):
                 "persist_dir":       self._persist_dir,
                 "collection_name":   self._collection_name,
             }, f)
-        print(f"[ChromaStore] Persisted to {self._persist_dir} (collection: {self._collection_name})")
+        print(f"[ChromaDB] Persisted to {self._persist_dir} (collection: {self._collection_name})")
 
     @classmethod
-    def load(cls, path: str) -> "ChromaStore":
+    def load(cls, path: str) -> "ChromaDB":
         with open(f"{path}.chroma_meta.pkl", "rb") as f:
             meta = pickle.load(f)
-        store = cls(
+        DB = cls(
             collection_name=meta["collection_name"],
             persist_dir=meta["persist_dir"],
         )
-        print(f"[ChromaStore] Loaded {store.size} chunks from {meta['persist_dir']}")
-        return store
+        print(f"[ChromaDB] Loaded {DB.size} chunks from {meta['persist_dir']}")
+        return DB
 
     @property
     def chunks(self) -> list[Chunk]:
@@ -220,4 +195,4 @@ class ChromaStore(BaseVectorStore):
         return self._collection.count()
 
     def __repr__(self):
-        return f"ChromaStore(collection='{self._collection_name}', size={self.size})"
+        return f"ChromaDB(collection='{self._collection_name}', size={self.size})"
