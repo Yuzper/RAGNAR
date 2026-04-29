@@ -38,6 +38,18 @@ def _chunk_relevance_by_text(
 # ========== Eval data structures ==========
 @dataclass
 class EvalSample:
+    """
+    A single evaluation item.
+
+    NQ usage:
+        EvalSample(
+            query="when was google founded",
+            gold_answer="September 4, 1998",
+            metadata={"all_answers": ["September 4, 1998", "1998"]},
+        )
+        Relevance is determined at eval time by has_answer() against
+        retrieved chunk text.
+    """
     query: str
     gold_answer: str | None = None
     metadata: dict = field(default_factory=dict)
@@ -86,7 +98,8 @@ class EmbeddingEvaluator:
             "avg_latency_ms": statistics.mean(latencies),
             "p95_latency_ms": _p95(latencies),
             "throughput_qps": len(traces) / total_s if total_s > 0 else 0.0,
-            "dimension": embedder_dim
+            "dimension": embedder_dim,
+            "avg_rss_delta_mb": _avg_memory(traces, "embed"),
         }
 
 
@@ -121,7 +134,8 @@ class RetrievalEvaluator:
             "precision_at_k": statistics.mean(precisions) if precisions else None,
             "recall_at_k":    statistics.mean(recalls)    if recalls    else None,
             "mrr":            statistics.mean(rrs)        if rrs        else None,
-            "hit_rate":       statistics.mean(hits)       if hits       else None
+            "hit_rate":       statistics.mean(hits)       if hits       else None,
+            "avg_rss_delta_mb": _avg_memory(traces, "retrieve"),
         }
 
 
@@ -159,7 +173,8 @@ class RerankerEvaluator:
             "p95_latency_ms": _p95(latencies),
             "mrr_before":     statistics.mean(mrr_before_list) if mrr_before_list else None,
             "mrr_after":      statistics.mean(mrr_after_list)  if mrr_after_list  else None,
-            "mrr_delta":      mrr_delta
+            "mrr_delta":      mrr_delta,
+            "avg_rss_delta_mb": _avg_memory(traces, "rerank"),
         }
 
 
@@ -210,7 +225,8 @@ class GenerationEvaluator:
             "avg_prompt_tokens":     statistics.mean(prompt_tokens_list)     if prompt_tokens_list     else None,
             "avg_completion_tokens": statistics.mean(completion_tokens_list) if completion_tokens_list else None,
             "avg_tokens_per_sec":    statistics.mean(tps_list)               if tps_list               else None,
-            "avg_ttft_ms":           statistics.mean(ttft_list)              if ttft_list              else None
+            "avg_ttft_ms":           statistics.mean(ttft_list)              if ttft_list              else None,
+            "avg_rss_delta_mb":      _avg_memory(traces, "generate"),
         }
 
 
@@ -223,6 +239,8 @@ class EvalReport:
     n_samples: int
     timestamp: str
     total_elapsed_s: float
+    pipeline_start: str          # wall-clock ISO timestamp when first query started
+    pipeline_end: str            # wall-clock ISO timestamp when last query finished
     embedding:  dict
     retrieval:  dict
     reranking:  dict
@@ -234,20 +252,25 @@ class EvalReport:
         def show(v): return f"{v:.4f}" if isinstance(v, float) else ("n/a" if v is None else str(v))
         return "\n".join([
             sep, f"  Eval — {self.dataset_name}  ({self.n_samples} samples)", sep,
+            f"  Pipeline start  : {self.pipeline_start}",
+            f"  Pipeline end    : {self.pipeline_end}",
             "  EMBEDDING",
             f"    Latency avg/p95 : {self.embedding['avg_latency_ms']:.1f} / {self.embedding['p95_latency_ms']:.1f} ms",
             f"    Throughput      : {self.embedding['throughput_qps']:.2f} qps",
+            f"    RSS delta       : {show(self.embedding.get('avg_rss_delta_mb'))} MB",
             f"    Dimension       : {self.embedding['dimension']}",
             sep, "  RETRIEVAL",
             f"    Latency avg/p95 : {self.retrieval['avg_latency_ms']:.1f} / {self.retrieval['p95_latency_ms']:.1f} ms",
             f"    Hit rate        : {show(self.retrieval.get('hit_rate'))}",
             f"    MRR             : {show(self.retrieval.get('mrr'))}",
             f"    Precision@k     : {show(self.retrieval.get('precision_at_k'))}",
+            f"    RSS delta       : {show(self.retrieval.get('avg_rss_delta_mb'))} MB",
             f"    Recall@k        : {show(self.retrieval.get('recall_at_k'))}",
             sep, "  RERANKING",
             f"    Latency avg/p95 : {self.reranking['avg_latency_ms']:.1f} / {self.reranking['p95_latency_ms']:.1f} ms",
             f"    MRR before      : {show(self.reranking.get('mrr_before'))}",
             f"    MRR after       : {show(self.reranking.get('mrr_after'))}",
+            f"    RSS delta       : {show(self.reranking.get('avg_rss_delta_mb'))} MB",
             f"    MRR delta       : {show(self.reranking.get('mrr_delta'))}",
             sep, "  GENERATION",
             f"    Latency avg/p95 : {self.generation['avg_latency_ms']:.1f} / {self.generation['p95_latency_ms']:.1f} ms",
@@ -257,6 +280,7 @@ class EvalReport:
             f"    Prompt tokens   : {show(self.generation.get('avg_prompt_tokens'))}",
             f"    Compl. tokens   : {show(self.generation.get('avg_completion_tokens'))}",
             f"    Tokens/sec      : {show(self.generation.get('avg_tokens_per_sec'))}",
+            f"    RSS delta       : {show(self.generation.get('avg_rss_delta_mb'))} MB",
             f"    TTFT (ms)       : {show(self.generation.get('avg_ttft_ms'))}",
             sep, f"  Total: {self.total_elapsed_s:.1f}s", sep
         ])
@@ -267,6 +291,8 @@ class EvalReport:
             "dataset": self.dataset_name,
             "n_samples": self.n_samples,
             "timestamp": self.timestamp,
+            "pipeline_start": self.pipeline_start,
+            "pipeline_end":   self.pipeline_end,
             "total_elapsed_s": round(self.total_elapsed_s, 2),
             "config": self.config,
             "stages": {
@@ -299,6 +325,10 @@ class PipelineEvaluator:
 
         samples = list(dataset.samples)
 
+        # Wall-clock bookends across all queries
+        pipeline_start = traces[0].wall_time.get("pipeline_start", "") if traces else ""
+        pipeline_end   = traces[-1].wall_time.get("pipeline_end",  "") if traces else ""
+
         emb = EmbeddingEvaluator().evaluate(traces, self.pipeline.embedder.dimension)
         ret = RetrievalEvaluator().evaluate(traces, samples, k=self.retrieval_k)
         rer = RerankerEvaluator().evaluate(traces, samples)
@@ -310,6 +340,8 @@ class PipelineEvaluator:
             n_samples=len(dataset),
             timestamp=datetime.now().isoformat(timespec="seconds"),
             total_elapsed_s=time.time() - t_start,
+            pipeline_start=pipeline_start,
+            pipeline_end=pipeline_end,
             embedding=emb,
             retrieval=ret,
             reranking=rer,
@@ -351,17 +383,20 @@ def compare_reports(reports: dict[str, EvalReport]) -> str:
         header, sep,
         "EMBEDDING",
         row("avg latency (ms)",  lambda r: r.embedding.get("avg_latency_ms")),
+        row("RSS delta (MB)",    lambda r: r.embedding.get("avg_rss_delta_mb")),
         row("throughput (qps)",  lambda r: r.embedding.get("throughput_qps")),
         "RETRIEVAL",
         row("hit rate",          lambda r: r.retrieval.get("hit_rate")),
         row("MRR",               lambda r: r.retrieval.get("mrr")),
         row("precision@k",       lambda r: r.retrieval.get("precision_at_k")),
         row("recall@k",          lambda r: r.retrieval.get("recall_at_k")),
+        row("RSS delta (MB)",    lambda r: r.retrieval.get("avg_rss_delta_mb")),
         row("avg latency (ms)",  lambda r: r.retrieval.get("avg_latency_ms")),
         "RERANKING",
         row("MRR before",        lambda r: r.reranking.get("mrr_before")),
         row("MRR after",         lambda r: r.reranking.get("mrr_after")),
         row("MRR delta",         lambda r: r.reranking.get("mrr_delta")),
+        row("RSS delta (MB)",    lambda r: r.reranking.get("avg_rss_delta_mb")),
         row("avg latency (ms)",  lambda r: r.reranking.get("avg_latency_ms")),
         "GENERATION",
         row("BERTScore F1",      lambda r: r.generation.get("avg_bert_score")),
@@ -371,6 +406,7 @@ def compare_reports(reports: dict[str, EvalReport]) -> str:
         row("avg compl. tokens",  lambda r: r.generation.get("avg_completion_tokens")),
         row("avg tokens/sec",     lambda r: r.generation.get("avg_tokens_per_sec")),
         row("avg TTFT (ms)",      lambda r: r.generation.get("avg_ttft_ms")),
+        row("RSS delta (MB)",    lambda r: r.generation.get("avg_rss_delta_mb")),
         row("avg latency (ms)",   lambda r: r.generation.get("avg_latency_ms")),
         sep,
         row("total elapsed (s)", lambda r: r.total_elapsed_s)
@@ -378,6 +414,13 @@ def compare_reports(reports: dict[str, EvalReport]) -> str:
 
 
 # ========== Helpers ==========
+
+def _avg_memory(traces, stage: str):
+    """Average non-None RSS delta (MB) for a stage across traces. None if unavailable."""
+    vals = [t.memory_mb.get(stage) for t in traces]
+    defined = [v for v in vals if v is not None]
+    return round(statistics.mean(defined), 2) if defined else None
+
 
 def _p95(values: list[float]) -> float:
     if not values:

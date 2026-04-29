@@ -2,6 +2,7 @@ import os
 import pickle
 import numpy as np
 from .base import BaseVectorDataBase, Chunk
+import faiss
 
 # =====================================================================
 # FAISSDB
@@ -14,7 +15,6 @@ class FAISSDB(BaseVectorDataBase):
         dimension : must match your embedder's output dimension
         metric    : "cosine" (default) or "l2"
         """
-        import faiss
         self._faiss = faiss
         self.dimension = dimension
         self.metric = metric
@@ -24,10 +24,6 @@ class FAISSDB(BaseVectorDataBase):
             self._index = faiss.IndexFlatIP(dimension)
         else:
             self._index = faiss.IndexFlatL2(dimension)
-
-    # ------------------------------------------------------------------
-    # BaseVectorDB interface
-    # ------------------------------------------------------------------
 
     def add(self, chunks: list[Chunk], embeddings: list[list[float]]) -> None:
         vecs = np.array(embeddings, dtype=np.float32)
@@ -77,7 +73,6 @@ class FAISSDB(BaseVectorDataBase):
     @classmethod
     def load(cls, path: str) -> "FAISSDB":
         """Load from {path}.faiss and {path}.pkl."""
-        import faiss
         with open(f"{path}.pkl", "rb") as f:
             meta = pickle.load(f)
         DB = cls(dimension=meta["dimension"], metric=meta["metric"])
@@ -101,12 +96,10 @@ class FAISSDB(BaseVectorDataBase):
 # =====================================================================
 # ChromaDB
 # =====================================================================
-
 class ChromaDB(BaseVectorDataBase):
     """
     Persistent vector DB backed by ChromaDB.
-    Data is written to disk automatically — survives process restarts
-    without calling save() explicitly.
+    Data is written to disk automatically — survives process restarts without calling save() explicitly.
 
     Install: pip install chromadb
     """
@@ -196,3 +189,4 @@ class ChromaDB(BaseVectorDataBase):
 
     def __repr__(self):
         return f"ChromaDB(collection='{self._collection_name}', size={self.size})"
+    

@@ -6,15 +6,6 @@ from .base import BaseKnowledgeLoader, BaseVectorDataBase
 from ..pipeline import OfflineBuildTrace
 
 
-def _rss_mb() -> float | None:
-    """Current process RSS in MB. Returns None if psutil is unavailable."""
-    try:
-        import psutil
-        return psutil.Process(os.getpid()).memory_info().rss / 1_048_576
-    except Exception:
-        return None
-
-
 class WikipediaLoader(BaseKnowledgeLoader):
     """
     Loader for the Wikipedia psgs_w100.tsv format.
@@ -32,7 +23,6 @@ class WikipediaLoader(BaseKnowledgeLoader):
     def load_and_index(self, file_path: str, batch_size: int = 128) -> BaseVectorDataBase:
         print(f"[WikipediaLoader] Starting: {file_path}")
         t_total_start = time.time()
-        m0 = _rss_mb()
 
         file_chunk_size = batch_size * 10   # rows read per pandas iteration
 
@@ -77,8 +67,6 @@ class WikipediaLoader(BaseKnowledgeLoader):
             print(f"  Processed {total_passages:,} passages  ({total_chunks:,} chunks)...")
 
         total_elapsed_s = time.time() - t_total_start
-        m1 = _rss_mb()
-        rss_delta = (m1 - m0) if (m0 is not None and m1 is not None) else None
         chunks_per_sec = total_chunks / embed_time_s if embed_time_s > 0 else 0.0
 
         self.last_build_trace = OfflineBuildTrace(
@@ -90,8 +78,7 @@ class WikipediaLoader(BaseKnowledgeLoader):
             embed_ms       = round(embed_time_s   * 1000, 1),
             index_ms       = round(index_time_s   * 1000, 1),
             total_ms       = round(total_elapsed_s * 1000, 1),
-            chunks_per_sec = round(chunks_per_sec, 1),
-            rss_delta_mb   = round(rss_delta, 2) if rss_delta is not None else None,
+            chunks_per_sec = round(chunks_per_sec, 1)
         )
 
         self._print_summary()
@@ -115,6 +102,5 @@ class WikipediaLoader(BaseKnowledgeLoader):
             f"    Embedding : {t.embed_ms:.0f} ms  ({t.chunks_per_sec:.1f} chunks/s)",
             f"    Indexing  : {t.index_ms:.0f} ms",
             f"    Total     : {t.total_ms / 1000:.1f} s",
-            f"  RSS delta               : {show(t.rss_delta_mb)} MB  (requires psutil)",
             sep,
         ]))
