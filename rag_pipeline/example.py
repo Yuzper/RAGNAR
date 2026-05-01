@@ -12,7 +12,7 @@ import pandas as pd
 # ──────────────────── Components for Pipeline ────────────────────
 # Shared components
 #data_path           = "psgs_sample_500.tsv"
-data_path           = "data/psgs_w100.tsv"
+data_path           = "data/wikiDump/psgs_sample_500.tsv.tsv"
 chunker             = BasicChunker()
 embedder            = SentenceTransformerEmbedder("all-MiniLM-L6-v2")
 vector_db           = FAISSDB(dimension=embedder.dimension, metric="cosine")
@@ -71,7 +71,7 @@ pipeline_2 = RAGPipeline(chunker=chunker,
 #    ],
 #)
 
-df = pd.read_csv("NQ/Natural-Questions-Filtered.csv", sep=",")
+df = pd.read_csv("data/NQ/Natural-Questions-Filtered-Subset.csv", sep=",")
 
 # Drop rows where both answers are missing
 df = df.dropna(subset=["short_answers", "long_answers"], how="all")

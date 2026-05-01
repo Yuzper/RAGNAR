@@ -1,0 +1,52 @@
+{
+  "pipeline": "RAGPipeline\n  Chunker   : BasicChunker(chunk_size=512, chunk_overlap=0)\n  Embedder  : SentenceTransformerEmbedder(model='all-MiniLM-L6-v2', dim=384)\n  Store     : FAISSDB(metric='cosine', size=303, dim=384, gpu=False)\n  Retriever : DenseRetriever(db=FAISSDB(metric='cosine', size=303, dim=384, gpu=False), retriever_top_k=30)\n  Reranker  : CrossEncoderReranker(model='cross-encoder/ms-marco-MiniLM-L-6-v2')\n  Generator : OllamaGenerator(model='llama3.2', temp=0.0)\nretriever_top_k=30\nreranker_top_k=10",
+  "dataset": "natural_questions",
+  "n_samples": 200,
+  "timestamp": "2026-05-01T21:45:46",
+  "pipeline_start": "2026-05-01T21:42:28.173",
+  "pipeline_end": "2026-05-01T21:45:14.317",
+  "total_elapsed_s": 197.83,
+  "config": {
+    "retriever_top_k": 30,
+    "reranker_top_k": 10
+  },
+  "stages": {
+    "embedding": {
+      "avg_latency_ms": 6.0673558712005615,
+      "p95_latency_ms": 6.684303283691406,
+      "throughput_qps": 164.81644083984276,
+      "dimension": 384,
+      "avg_rss_delta_mb": null
+    },
+    "retrieval": {
+      "avg_latency_ms": 0.1320493221282959,
+      "p95_latency_ms": 0.14472007751464844,
+      "k": 30,
+      "precision_at_k": 0.0015,
+      "recall_at_k": 0.02,
+      "mrr": 0.004692307692307692,
+      "hit_rate": 0.02,
+      "avg_rss_delta_mb": null
+    },
+    "reranking": {
+      "avg_latency_ms": 142.66976833343506,
+      "p95_latency_ms": 165.20190238952637,
+      "mrr_before": 0.004692307692307692,
+      "mrr_after": 0.004166666666666667,
+      "mrr_delta": -0.0005256410256410252,
+      "avg_rss_delta_mb": null
+    },
+    "generation": {
+      "avg_latency_ms": 681.7746460437775,
+      "p95_latency_ms": 1488.243579864502,
+      "avg_bert_score": 0.8094575244188309,
+      "avg_rouge_l": 0.026829131354499856,
+      "avg_exact_match": 0.0,
+      "avg_prompt_tokens": 393.56,
+      "avg_completion_tokens": 115.12,
+      "avg_tokens_per_sec": 179.7388571889514,
+      "avg_ttft_ms": 60.95086097717285,
+      "avg_rss_delta_mb": null
+    }
+  }
+}

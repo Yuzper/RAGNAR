@@ -4,3 +4,5 @@ ollama>=0.2
 chromadb>=0.3
 rouge_score
 bert_score
+numpy
+pandas

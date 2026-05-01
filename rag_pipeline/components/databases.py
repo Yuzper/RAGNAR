@@ -4,16 +4,9 @@ import numpy as np
 from .base import BaseVectorDataBase, Chunk
 import faiss
 
-import os
-import pickle
-import numpy as np
-from .base import BaseVectorDataBase, Chunk
-import faiss
-
 # =====================================================================
 # FAISSDB
 # =====================================================================
-
 class FAISSDB(BaseVectorDataBase):
     def __init__(self, dimension: int, metric: str = "cosine", use_gpu: bool = True):
         """
