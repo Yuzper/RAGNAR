@@ -1,3 +1,4 @@
+import datetime as dt
 from rag_pipeline.components.knowledgeLoader import WikipediaLoader
 from rag_pipeline.pipeline import RAGPipeline
 from rag_pipeline.components.chunker import BasicChunker
@@ -8,6 +9,7 @@ from rag_pipeline.components.rerankers import CrossEncoderReranker, PassthroughR
 from rag_pipeline.components.generators import OllamaGenerator
 from rag_pipeline.evaluate import EvalDataset, EvalSample, PipelineEvaluator, compare_reports
 import pandas as pd
+import faiss
 
 # ──────────────────── Components for Pipeline ────────────────────
 # Shared components
@@ -15,7 +17,7 @@ import pandas as pd
 data_path           = "data/wikiDump/psgs_sample_500.tsv.tsv"
 chunker             = BasicChunker()
 embedder            = SentenceTransformerEmbedder("all-MiniLM-L6-v2")
-vector_db           = FAISSDB(dimension=embedder.dimension, metric="cosine")
+vector_db           = FAISSDB(dimension=embedder.dimension, metric="cosine", use_gpu=True)
 # Choose dataset to load, it chunks, embeds and indexes in batches.
 knowledgeBaseLoader = WikipediaLoader(db=vector_db, embedder=embedder, chunker=chunker)
 
@@ -24,13 +26,16 @@ retriever   = DenseRetriever(vector_db, retriever_top_k=30)
 reranker    = CrossEncoderReranker("cross-encoder/ms-marco-MiniLM-L-6-v2", reranker_top_k=10)
 generator   = OllamaGenerator("llama3.2")
 
+print(f"Number of GPUs available: {faiss.get_num_gpus()}")
+
 print("="*50)
 print("Components initialized.")
 # ──────────────────── Offline stage ────────────────────
 # Offline stage. Only run once.
+ts = dt.datetime.now().strftime("%Y%m%d_%H%M%S")
 print("="*50)
 print("Loading and indexing data...")
-vector_db = knowledgeBaseLoader.load_and_index(data_path)
+vector_db = knowledgeBaseLoader.load_and_index(data_path, batch_size=128, output_path=f"results/offline_{vector_db.__type__()}_{ts}.json")
 
 print("="*50)
 print("Data loaded and indexed.")
@@ -48,7 +53,7 @@ pipeline_2 = RAGPipeline(chunker=chunker,
                         embedder=embedder,
                         DataBase=vector_db,
                         retriever=retriever,
-                        reranker=PassthroughReranker(),
+                        reranker=PassthroughReranker(reranker_top_k=10),
                         generator=generator
                         )
 
@@ -72,32 +77,29 @@ pipeline_2 = RAGPipeline(chunker=chunker,
 #)
 
 df = pd.read_csv("data/NQ/Natural-Questions-Filtered-Subset.csv", sep=",")
-
-# Drop rows where both answers are missing
-df = df.dropna(subset=["short_answers", "long_answers"], how="all")
+print(f"Number of samples in dataset: {len(df)}")
+df = df.dropna(subset=["short_answers", "long_answers"], how="all") # Drop rows where both answers are missing
+print(f"Number of samples after filtering: {len(df)}")
 
 dataset = EvalDataset.from_dicts(
     name="natural_questions",
-    items=[
-        {
-            "query":       row["question"],
-            "gold_answer": row["short_answers"] if pd.notna(row["short_answers"]) 
-                           else row["long_answers"],
-            "metadata": {
-                "all_answers": [
-                    a for a in [row.get("short_answers"), row.get("long_answers")]
-                    if pd.notna(a)
-                ]
-            }
-        }
+    items=[{
+        "query":       row["question"],
+        "gold_answer": row["short_answers"] if pd.notna(row["short_answers"]) 
+                        else row["long_answers"],
+        "metadata": {
+            "all_answers": [
+                a for a in [row.get("short_answers"), row.get("long_answers")]
+                if pd.notna(a)
+            ]}}
         for _, row in df.iterrows()
-    ]
-)
+    ])
+
 print(f"Dataset '{dataset.name}' loaded with {len(dataset.samples)} samples.")
 
-pipeline_setup_1  = PipelineEvaluator(pipeline_1).run(dataset,  "results/pipeline_1.json")
+pipeline_setup_1  = PipelineEvaluator(pipeline_1).run(dataset,  f"results/pipeline_1_{ts}.json")
 print("Pipeline 1 evaluation complete.")
-pipeline_setup_2  = PipelineEvaluator(pipeline_2).run(dataset,  "results/pipeline_2.json")
+pipeline_setup_2  = PipelineEvaluator(pipeline_2).run(dataset,  f"results/pipeline_2_{ts}.json")
 print("Pipeline 2 evaluation complete.")
 
 print(compare_reports({

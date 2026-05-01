@@ -1,7 +1,9 @@
 from .base import BaseGenerator, Chunk
 from ..metrics import tokens_per_second
 from ollama import ChatResponse
-import time, ollama
+import time, ollama, logging
+
+logging.getLogger("httpx").setLevel(logging.WARNING)
 
 class OllamaGenerator(BaseGenerator):
     """

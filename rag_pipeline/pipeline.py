@@ -47,7 +47,6 @@ class RunTrace:
     wall_time:  dict[str, str]   = field(default_factory=dict)  # ISO timestamps per stage
     stage_meta: dict[str, dict]  = field(default_factory=dict)
     warnings:   list[str]        = field(default_factory=list)
-    memory_mb:  dict[str, float] = field(default_factory=dict)
 
     def summary(self) -> str:
         lines = [

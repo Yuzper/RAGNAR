@@ -5,14 +5,14 @@ class PassthroughReranker(BaseReranker):
     """
     Returns chunks in the same order as the retriever Baseline.
     """
-    def __init__(self):
-        super().__init__(reranker_top_k=5)
-
+    def __init__(self, reranker_top_k: int = 5):
+        super().__init__(reranker_top_k=reranker_top_k)
+ 
     def rerank(self, query: str, chunks: list[Chunk], top_k: int = 5) -> list[Chunk]:
         return chunks[:top_k]
     
     def __repr__(self):
-        return "PassthroughReranker()"
+        return f"PassthroughReranker(reranker_top_k={self.reranker_top_k})"
 
 
 class CrossEncoderReranker(BaseReranker):
@@ -30,7 +30,7 @@ class CrossEncoderReranker(BaseReranker):
             chunk.score = float(score)
         ranked = sorted(chunks, key=lambda c: c.score, reverse=True)
         return ranked[:top_k]
-
+ 
     def __repr__(self):
         return f"CrossEncoderReranker(model='{self._model_name}')"
 

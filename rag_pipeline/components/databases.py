@@ -3,6 +3,7 @@ import pickle
 import numpy as np
 from .base import BaseVectorDataBase, Chunk
 import faiss
+import chromadb
 
 # =====================================================================
 # FAISSDB
@@ -132,6 +133,9 @@ class FAISSDB(BaseVectorDataBase):
     def __repr__(self):
         gpu_str = f"gpu=True" if self.use_gpu and self._faiss.get_num_gpus() > 0 else "gpu=False"
         return f"FAISSDB(metric='{self.metric}', size={self.size}, dim={self.dimension}, {gpu_str})"
+    
+    def __type__(self):
+        return "FAISSDB"
 
 
 # =====================================================================
@@ -146,7 +150,6 @@ class ChromaDB(BaseVectorDataBase):
     """
 
     def __init__(self, collection_name: str = "ragnar", persist_dir: str = "./chroma_db"):
-        import chromadb
         self._client = chromadb.PersistentClient(path=persist_dir)
         self._collection = self._client.get_or_create_collection(
             name=collection_name,
@@ -231,3 +234,5 @@ class ChromaDB(BaseVectorDataBase):
     def __repr__(self):
         return f"ChromaDB(collection='{self._collection_name}', size={self.size})"
     
+    def __type__(self):
+        return "ChromaDB"

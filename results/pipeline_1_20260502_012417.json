@@ -2,51 +2,47 @@
   "pipeline": "RAGPipeline\n  Chunker   : BasicChunker(chunk_size=512, chunk_overlap=0)\n  Embedder  : SentenceTransformerEmbedder(model='all-MiniLM-L6-v2', dim=384)\n  Store     : FAISSDB(metric='cosine', size=303, dim=384, gpu=False)\n  Retriever : DenseRetriever(db=FAISSDB(metric='cosine', size=303, dim=384, gpu=False), retriever_top_k=30)\n  Reranker  : CrossEncoderReranker(model='cross-encoder/ms-marco-MiniLM-L-6-v2')\n  Generator : OllamaGenerator(model='llama3.2', temp=0.0)\nretriever_top_k=30\nreranker_top_k=10",
   "dataset": "natural_questions",
   "n_samples": 200,
-  "timestamp": "2026-05-01T22:46:06",
-  "pipeline_start": "2026-05-01T22:42:48.287",
-  "pipeline_end": "2026-05-01T22:45:35.048",
-  "total_elapsed_s": 198.62,
+  "timestamp": "2026-05-02T01:27:37",
+  "pipeline_start": "2026-05-02T01:24:18.536",
+  "pipeline_end": "2026-05-02T01:27:05.495",
+  "total_elapsed_s": 198.99,
   "config": {
     "retriever_top_k": 30,
     "reranker_top_k": 10
   },
   "stages": {
     "embedding": {
-      "avg_latency_ms": 6.086785793304443,
-      "p95_latency_ms": 6.746530532836914,
-      "throughput_qps": 164.2903223405718,
-      "dimension": 384,
-      "avg_rss_delta_mb": null
+      "avg_latency_ms": 6.085072755813599,
+      "p95_latency_ms": 6.744861602783203,
+      "throughput_qps": 164.33657248298522,
+      "dimension": 384
     },
     "retrieval": {
-      "avg_latency_ms": 0.1315629482269287,
-      "p95_latency_ms": 0.14495849609375,
+      "avg_latency_ms": 0.12824416160583496,
+      "p95_latency_ms": 0.13875961303710938,
       "k": 30,
       "precision_at_k": 0.0015,
       "recall_at_k": 0.02,
       "mrr": 0.004692307692307692,
-      "hit_rate": 0.02,
-      "avg_rss_delta_mb": null
+      "hit_rate": 0.02
     },
     "reranking": {
-      "avg_latency_ms": 144.2772376537323,
-      "p95_latency_ms": 174.6211051940918,
+      "avg_latency_ms": 143.85247349739075,
+      "p95_latency_ms": 170.51291465759277,
       "mrr_before": 0.004692307692307692,
       "mrr_after": 0.004166666666666667,
-      "mrr_delta": -0.0005256410256410252,
-      "avg_rss_delta_mb": null
+      "mrr_delta": -0.0005256410256410252
     },
     "generation": {
-      "avg_latency_ms": 683.2307255268097,
-      "p95_latency_ms": 1495.9139823913574,
-      "avg_bert_score": 0.8094575265049935,
+      "avg_latency_ms": 684.6511054039001,
+      "p95_latency_ms": 1496.0896968841553,
+      "avg_bert_score": 0.8094575244188309,
       "avg_rouge_l": 0.026829131354499856,
       "avg_exact_match": 0.0,
       "avg_prompt_tokens": 393.56,
       "avg_completion_tokens": 115.12,
-      "avg_tokens_per_sec": 179.49064992908205,
-      "avg_ttft_ms": 60.93392491340637,
-      "avg_rss_delta_mb": null
+      "avg_tokens_per_sec": 179.31002141088857,
+      "avg_ttft_ms": 61.91489100456238
     }
   }
 }

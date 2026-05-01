@@ -1,6 +1,8 @@
+import json
 import os
 import time
 import csv
+from pathlib import Path
 import pandas as pd
 from .base import BaseKnowledgeLoader, BaseVectorDataBase
 from ..pipeline import OfflineBuildTrace
@@ -9,18 +11,16 @@ from ..pipeline import OfflineBuildTrace
 class WikipediaLoader(BaseKnowledgeLoader):
     """
     Loader for the Wikipedia psgs_w100.tsv format.
-    Streams the file in large file-chunks and sub-batches embedding
-    to avoid OOM errors on large corpora.
+    Streams the file in large file-chunks and sub-batches embedding to avoid OOM errors on large corpora.
 
-    After load_and_index() returns, build metrics are available on
-    self.last_build_trace (OfflineBuildTrace).
+    After load_and_index() returns, build metrics are available on self.last_build_trace (OfflineBuildTrace).
     """
 
     def __init__(self, db, embedder, chunker):
         super().__init__(db, embedder, chunker)
         self.last_build_trace: OfflineBuildTrace | None = None
 
-    def load_and_index(self, file_path: str, batch_size: int = 128) -> BaseVectorDataBase:
+    def load_and_index(self, file_path: str, batch_size: int = 128, output_path: str | None = None) -> BaseVectorDataBase:
         print(f"[WikipediaLoader] Starting: {file_path}")
         t_total_start = time.time()
 
@@ -82,6 +82,14 @@ class WikipediaLoader(BaseKnowledgeLoader):
         )
 
         self._print_summary()
+
+        if output_path:
+            p = Path(output_path)
+            p.parent.mkdir(parents=True, exist_ok=True)
+            with open(p, "w", encoding="utf-8") as f:
+                json.dump(self.last_build_trace.to_dict(), f, indent=2)
+            print(f"[WikipediaLoader] Build trace saved → {output_path}")
+
         return self.db
 
     def _print_summary(self) -> None:

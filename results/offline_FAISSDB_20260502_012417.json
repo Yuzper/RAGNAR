@@ -1,0 +1,15 @@
+{
+  "n_passages": 288,
+  "n_chunks": 303,
+  "chunk_size_avg": 121.6,
+  "chunk_size_min": 1,
+  "chunk_size_max": 512,
+  "latency_ms": {
+    "embed": 713.1,
+    "index": 2.8,
+    "total": 732.6
+  },
+  "embed_throughput": {
+    "chunks_per_sec": 424.9
+  }
+}
