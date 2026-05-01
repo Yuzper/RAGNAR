@@ -2,7 +2,7 @@ from rag_pipeline.components.knowledgeLoader import WikipediaLoader
 from rag_pipeline.pipeline import RAGPipeline
 from rag_pipeline.components.chunker import BasicChunker
 from rag_pipeline.components.embedders import SentenceTransformerEmbedder
-from rag_pipeline.components.stores import FAISSDB
+from rag_pipeline.components.databases import FAISSDB
 from rag_pipeline.components.retrievers import DenseRetriever
 from rag_pipeline.components.rerankers import CrossEncoderReranker, PassthroughReranker
 from rag_pipeline.components.generators import OllamaGenerator
