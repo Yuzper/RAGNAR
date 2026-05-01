@@ -2,25 +2,25 @@
   "pipeline": "RAGPipeline\n  Chunker   : BasicChunker(chunk_size=512, chunk_overlap=0)\n  Embedder  : SentenceTransformerEmbedder(model='all-MiniLM-L6-v2', dim=384)\n  Store     : FAISSDB(metric='cosine', size=303, dim=384, gpu=False)\n  Retriever : DenseRetriever(db=FAISSDB(metric='cosine', size=303, dim=384, gpu=False), retriever_top_k=30)\n  Reranker  : PassthroughReranker()\n  Generator : OllamaGenerator(model='llama3.2', temp=0.0)\nretriever_top_k=30\nreranker_top_k=5",
   "dataset": "natural_questions",
   "n_samples": 200,
-  "timestamp": "2026-05-01T21:48:20",
-  "pipeline_start": "2026-05-01T21:45:46.106",
-  "pipeline_end": "2026-05-01T21:47:50.085",
-  "total_elapsed_s": 154.64,
+  "timestamp": "2026-05-01T22:48:42",
+  "pipeline_start": "2026-05-01T22:46:07.008",
+  "pipeline_end": "2026-05-01T22:48:11.275",
+  "total_elapsed_s": 155.06,
   "config": {
     "retriever_top_k": 30,
     "reranker_top_k": 5
   },
   "stages": {
     "embedding": {
-      "avg_latency_ms": 5.298652648925781,
-      "p95_latency_ms": 5.845546722412109,
-      "throughput_qps": 188.7272229861556,
+      "avg_latency_ms": 5.648232698440552,
+      "p95_latency_ms": 6.313323974609375,
+      "throughput_qps": 177.04653001922085,
       "dimension": 384,
       "avg_rss_delta_mb": null
     },
     "retrieval": {
-      "avg_latency_ms": 0.12033700942993164,
-      "p95_latency_ms": 0.12826919555664062,
+      "avg_latency_ms": 0.1271533966064453,
+      "p95_latency_ms": 0.1347064971923828,
       "k": 30,
       "precision_at_k": 0.0015,
       "recall_at_k": 0.02,
@@ -29,23 +29,23 @@
       "avg_rss_delta_mb": null
     },
     "reranking": {
-      "avg_latency_ms": 0.0018107891082763672,
-      "p95_latency_ms": 0.003337860107421875,
+      "avg_latency_ms": 0.0016200542449951172,
+      "p95_latency_ms": 0.002384185791015625,
       "mrr_before": 0.004692307692307692,
       "mrr_after": 0.004166666666666667,
       "mrr_delta": -0.0005256410256410252,
       "avg_rss_delta_mb": null
     },
     "generation": {
-      "avg_latency_ms": 614.4217157363892,
-      "p95_latency_ms": 1035.4762077331543,
-      "avg_bert_score": 0.8118078553676605,
+      "avg_latency_ms": 615.5056798458099,
+      "p95_latency_ms": 1042.9151058197021,
+      "avg_bert_score": 0.8118078547716141,
       "avg_rouge_l": 0.027956542993913796,
       "avg_exact_match": 0.0,
       "avg_prompt_tokens": 286.96,
       "avg_completion_tokens": 106.515,
-      "avg_tokens_per_sec": 180.86318820764575,
-      "avg_ttft_ms": 42.74865746498108,
+      "avg_tokens_per_sec": 180.67756200266032,
+      "avg_ttft_ms": 43.03031921386719,
       "avg_rss_delta_mb": null
     }
   }
