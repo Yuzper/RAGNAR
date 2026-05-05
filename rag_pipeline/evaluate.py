@@ -351,7 +351,7 @@ class PipelineEvaluator:
                 json.dump(report.to_dict(), f, indent=2)
             print(f"Saved → {output_path}")
 
-        print(report.summary())
+#        print(report.summary())
         return report
 
 

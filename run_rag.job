@@ -1,0 +1,57 @@
+#!/bin/bash
+#SBATCH --job-name=run_rag_%j
+#SBATCH --output=logs/run_rag_%j.out
+#SBATCH --error=logs/run_rag_%j.err
+#SBATCH --cpus-per-task=8
+#SBATCH --mem=160G
+#SBATCH --nodes=1
+#SBATCH --gres=gpu:1
+#SBATCH --time=24:00:00
+#SBATCH --partition=scavenge
+#SBATCH --mail-type=fail,end
+
+module load CUDA/12.6.0
+module --ignore_cache load "ollama/0.6.0-GCCcore-13.3.0-CUDA-12.6.0"
+
+source  ~/Miniconda3-py312_25.9.1-3-Linux-x86_64_MAIN/etc/profile.d/conda.sh
+conda activate rag_gpu
+ 
+echo "===== SLURM ENV ====="
+echo "Job ID             : $SLURM_JOB_ID"
+echo "Node               : $SLURMD_NODENAME"
+echo "CUDA_VISIBLE_DEVICES: $CUDA_VISIBLE_DEVICES"
+echo "Started at         : $(date +%Y-%m-%dT%H:%M:%S)"
+ 
+# --- Start Ollama server ---
+echo ""
+echo "===== STARTING OLLAMA ====="
+ollama serve > /dev/null 2>&1 &
+OLLAMA_PID=$!
+ 
+# Wait for Ollama to be ready
+OLLAMA_RETRIES=0
+until curl -s http://localhost:11434 > /dev/null; do
+    sleep 1
+    OLLAMA_RETRIES=$((OLLAMA_RETRIES + 1))
+    if [[ $OLLAMA_RETRIES -ge 120 ]]; then
+        echo "Ollama failed to start after 120s — aborting"
+        exit 1
+    fi
+done
+echo "Ollama PID: $OLLAMA_PID"
+
+# --- Run pipeline ---
+echo ""
+echo "===== RUNNING PIPELINE ====="
+cd RAGNAR
+./monitor.sh results/hardware_${SLURM_JOB_ID}.csv python -m rag_pipeline.example
+echo ""
+echo "===== DONE ====="
+echo "Finished at: $(date +%Y-%m-%dT%H:%M:%S)"
+ 
+# --- Cleanup ---
+echo "Stopping Ollama (PID: $OLLAMA_PID)..."
+kill $OLLAMA_PID
+wait $OLLAMA_PID 2>/dev/null
+echo "Ollama stopped."
+
