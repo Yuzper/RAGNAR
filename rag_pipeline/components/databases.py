@@ -3,6 +3,7 @@ import pickle
 import numpy as np
 from .base import BaseVectorDataBase, Chunk
 import faiss
+import chromadb
 
 # =====================================================================
 # FAISSDB
