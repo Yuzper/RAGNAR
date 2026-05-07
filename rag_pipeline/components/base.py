@@ -88,7 +88,8 @@ class BaseEmbedder(ABC):
         """Embed a list of texts. Returns a list of float vectors."""
 
     def embed_one(self, text: str) -> list[float]:
-        return self.embed([text])[0]
+        embeddings, _ = self.embed([text])
+        return embeddings[0]
 
     @property
     @abstractmethod

@@ -34,6 +34,7 @@ class WikipediaLoader(BaseKnowledgeLoader):
         super().__init__(db, embedder, chunker)
         self.last_build_trace: OfflineBuildTrace | None = None
 
+
     def load_and_index(
         self,
         file_path: str,
@@ -44,23 +45,30 @@ class WikipediaLoader(BaseKnowledgeLoader):
         print(f"[WikipediaLoader] Starting: {file_path}")
         t_total_start = time.time()
 
-        total_passages   = 0
-        total_chunks     = 0
+        total_passages    = 0
+        total_chunks      = 0
+        total_skipped     = 0
         chunk_lens: list[int] = []
-        embed_time_s     = 0.0
-        index_time_s     = 0.0
+        embed_time_s      = 0.0
+        index_time_s      = 0.0
 
         for rows in _iter_tsv(file_path, file_chunk_size):
             texts     = [row["text"] for row in rows]
             metadatas = [{k: v for k, v in row.items() if k != "text"} for row in rows]
 
             chunks = self.chunker.chunk_text(texts, metadatas=metadatas)
-            chunk_lens.extend(len(c.text) for c in chunks)
             chunk_texts = [c.text for c in chunks]
 
             t0 = time.time()
-            embeddings = self.embedder.embed(chunk_texts)
+            embeddings, skipped = self.embedder.embed(chunk_texts)
             embed_time_s += time.time() - t0
+
+            if skipped:
+                skipped_set = set(skipped)
+                chunks     = [c for i, c in enumerate(chunks) if i not in skipped_set]
+                total_skipped += len(skipped)
+
+            chunk_lens.extend(len(c.text) for c in chunks)
 
             t0 = time.time()
             self.db.add(chunks, embeddings)
@@ -72,6 +80,9 @@ class WikipediaLoader(BaseKnowledgeLoader):
 
         if hasattr(self.db, "finalize"):
             self.db.finalize()
+
+        if total_skipped:
+            print(f"[WikipediaLoader] Skipped {total_skipped:,} chunks with invalid URL patterns")
 
         total_elapsed_s = time.time() - t_total_start
         chunks_per_sec  = total_chunks / embed_time_s if embed_time_s > 0 else 0.0

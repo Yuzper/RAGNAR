@@ -1,23 +1,23 @@
 import datetime as dt
 from rag_pipeline.components.knowledgeLoader import WikipediaLoader
+from rag_pipeline.loadDatasetNQ import loadDatasetNQ
 from rag_pipeline.pipeline import RAGPipeline
-from rag_pipeline.components.chunker import BasicChunker
+from rag_pipeline.components.chunker import BasicChunker, PreChunkedChunker
 from rag_pipeline.components.embedders import SentenceTransformerEmbedder
 from rag_pipeline.components.databases import FAISSDB
 from rag_pipeline.components.retrievers import DenseRetriever
 from rag_pipeline.components.rerankers import CrossEncoderReranker, PassthroughReranker
 from rag_pipeline.components.generators import OllamaGenerator
 from rag_pipeline.evaluate import EvalDataset, EvalSample, PipelineEvaluator, compare_reports
-import pandas as pd
 import os
-
 
 job_id = os.environ.get("SLURM_JOB_ID") or dt.datetime.now().strftime("%Y%m%d_%H%M%S")
 # ──────────────────── Components for Pipeline ────────────────────
 # Shared components
-#data_path           = "data/wikiDump/psgs_w100.tsv"
-data_path           = "data/wikiDump/psgs_sample_500.tsv"
-chunker             = BasicChunker()
+data_path           = "data/wikiDump/psgs_w100.tsv"
+#data_path           = "data/wikiDump/wiki_1M_clean.tsv"
+#data_path           = "data/wikiDump/psgs_sample_500.tsv"
+chunker             = PreChunkedChunker()
 embedder            = SentenceTransformerEmbedder("all-MiniLM-L6-v2")
 vector_db = FAISSDB(
     dimension  = embedder.dimension,
@@ -69,46 +69,7 @@ pipeline_2 = RAGPipeline(chunker=chunker,
                         generator=generator
                         )
 
-# ──────────────────── Evaluate all three on the same dataset ────────────────────
-#dataset = EvalDataset( # Natural Questions dataset
-#    name="quick_eval",
-#    samples=[
-#        EvalSample(
-#            query="What was the original name of the Academy Award for Best Production Design?",
-#            gold_answer="Best Art Direction",
-#        ),
-#        EvalSample(
-#            query="When did the Academy Award for Best Art Direction change its name?",
-#            gold_answer="2012 for the 85th Academy Awards",
-#        ),
-#        EvalSample(
-#            query="Since what year is the Academy Award for Best Production Design shared with set decorators?",
-#            gold_answer="1947",
-#        ),
-#    ],
-#)
-
-df = pd.read_csv("data/NQ/Natural-Questions-Filtered-Subset.csv", sep=",")
-#df = pd.read_csv("data/NQ/Natural-Questions-Filtered.csv", sep=",")
-print(f"Number of samples in dataset: {len(df)}")
-df = df.dropna(subset=["short_answers", "long_answers"], how="all") # Drop rows where both answers are missing
-print(f"Number of samples after filtering: {len(df)}")
-
-dataset = EvalDataset.from_dicts(
-    name="natural_questions",
-    items=[{
-        "query":       row["question"],
-        "gold_answer": row["short_answers"] if pd.notna(row["short_answers"]) 
-                        else row["long_answers"],
-        "metadata": {
-            "all_answers": [
-                a for a in [row.get("short_answers"), row.get("long_answers")]
-                if pd.notna(a)
-            ]}}
-        for _, row in df.iterrows()
-    ])
-
-print(f"Dataset '{dataset.name}' loaded with {len(dataset.samples)} samples.")
+dataset = loadDatasetNQ("data/NQ/Natural-Questions-Filtered.csv")
 
 pipeline_setup_1  = PipelineEvaluator(pipeline_1).run(dataset,  f"results/pipeline_1_{job_id}.json")
 print("Pipeline 1 evaluation complete.")
