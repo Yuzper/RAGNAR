@@ -1,0 +1,61 @@
+#!/bin/bash
+#SBATCH --job-name=rag_online_%j
+#SBATCH --output=logs/rag_online_%j.out
+#SBATCH --error=logs/rag_online_%j.err
+#SBATCH --cpus-per-task=8
+#SBATCH --mem=160G
+#SBATCH --nodes=1
+#SBATCH --nodelist=cn[3,4,5,6,7,9,10,11,12,13,18,19]
+#SBATCH --gres=gpu:1
+#SBATCH --time=24:00:00
+#SBATCH --partition=scavenge
+#SBATCH --mail-type=fail,end
+
+DB_PATH="${1:?Usage: sbatch sbatch_online.sh <db_path>  e.g. results/FAISSDB_12345678.index}"
+
+module --ignore_cache load CUDA/12.6.0
+module --ignore_cache load "ollama/0.6.0-GCCcore-13.3.0-CUDA-12.6.0"
+
+source ~/Miniconda3-py312_25.9.1-3-Linux-x86_64_MAIN/etc/profile.d/conda.sh
+conda activate rag_gpu
+
+echo "===== SLURM ENV ====="
+echo "Job ID             : $SLURM_JOB_ID"
+echo "Node               : $SLURMD_NODENAME"
+echo "CUDA_VISIBLE_DEVICES: $CUDA_VISIBLE_DEVICES"
+echo "DB path            : $DB_PATH"
+echo "Started at         : $(date +%Y-%m-%dT%H:%M:%S)"
+
+# --- Start Ollama server ---
+echo ""
+echo "===== STARTING OLLAMA ====="
+ollama serve > /dev/null 2>&1 &
+OLLAMA_PID=$!
+
+OLLAMA_RETRIES=0
+until curl -s http://localhost:11434 > /dev/null; do
+    sleep 1
+    OLLAMA_RETRIES=$((OLLAMA_RETRIES + 1))
+    if [[ $OLLAMA_RETRIES -ge 120 ]]; then
+        echo "Ollama failed to start after 120s — aborting"
+        exit 1
+    fi
+done
+echo "Ollama PID: $OLLAMA_PID"
+
+# --- Run online evaluation ---
+echo ""
+echo "===== RUNNING ONLINE EVALUATION ====="
+cd RAGNAR
+./monitor.sh results/hardware_online_${SLURM_JOB_ID}.csv \
+    python online_phase.py --db "$DB_PATH"
+
+echo ""
+echo "===== DONE ====="
+echo "Finished at: $(date +%Y-%m-%dT%H:%M:%S)"
+
+# --- Cleanup ---
+echo "Stopping Ollama (PID: $OLLAMA_PID)..."
+kill $OLLAMA_PID
+wait $OLLAMA_PID 2>/dev/null
+echo "Ollama stopped."

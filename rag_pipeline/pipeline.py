@@ -8,6 +8,63 @@ from .components.base import (
 
 
 @dataclass
+class BatchTrace:
+    """Per-batch metrics captured during the offline build stage."""
+    batch_idx:               int
+    timestamp:               str    # ISO wall-clock at batch start
+    is_training_batch:       bool   # True if IVF training fired during this batch
+    n_passages:              int    # TSV rows fed into the chunker
+    n_chunks:                int    # chunks produced after chunking
+    n_skipped:               int    # chunks dropped before embedding
+    skip_rate:               float  # n_skipped / n_chunks_before_skip (0.0 if none)
+    embed_throughput_chunks_per_sec: float
+
+    # Chunk character-length distribution (computed before skips are removed)
+    chunk_length_mean: float
+    chunk_length_min:  int
+    chunk_length_max:  int
+    chunk_length_p5:   float
+    chunk_length_p95:  float
+
+    # L2 norm distribution of raw embeddings BEFORE normalisation
+    embed_norm_mean:  float
+    embed_norm_min:   float
+    embed_norm_max:   float
+    embed_norm_std:   float
+    embed_norm_p5:    float
+    embed_norm_p95:   float
+
+    def to_dict(self) -> dict:
+        return {
+            "batch_idx":         self.batch_idx,
+            "timestamp":         self.timestamp,
+            "is_training_batch": self.is_training_batch,
+            "n_passages":        self.n_passages,
+            "n_chunks":          self.n_chunks,
+            "n_skipped":         self.n_skipped,
+            "skip_rate":         self.skip_rate,
+            "embed_throughput": {
+                "chunks_per_sec": self.embed_throughput_chunks_per_sec,
+            },
+            "chunk_length": {
+                "mean": self.chunk_length_mean,
+                "min":  self.chunk_length_min,
+                "max":  self.chunk_length_max,
+                "p5":   self.chunk_length_p5,
+                "p95":  self.chunk_length_p95,
+            },
+            "embed_norm": {
+                "mean": self.embed_norm_mean,
+                "min":  self.embed_norm_min,
+                "max":  self.embed_norm_max,
+                "std":  self.embed_norm_std,
+                "p5":   self.embed_norm_p5,
+                "p95":  self.embed_norm_p95,
+            },
+        }
+
+
+@dataclass
 class OfflineBuildTrace:
     """Captures metrics from the offline build stage (chunking, embedding, indexing)."""
     n_passages:     int
@@ -19,7 +76,8 @@ class OfflineBuildTrace:
     index_ms:       float          # total indexing time in ms
     total_ms:       float          # wall-clock total in ms
     chunks_per_sec: float          # embedding throughput
- 
+    batches:        list[BatchTrace] = field(default_factory=list)
+
     def to_dict(self) -> dict:
         return {
             "n_passages":     self.n_passages,
@@ -35,6 +93,7 @@ class OfflineBuildTrace:
             "embed_throughput": {
                 "chunks_per_sec": self.chunks_per_sec,
             },
+            "batches": [b.to_dict() for b in self.batches],
         }
 
 @dataclass

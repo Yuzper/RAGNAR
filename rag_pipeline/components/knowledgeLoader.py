@@ -1,9 +1,11 @@
 import csv
 import json
 import time
+from datetime import datetime
 from pathlib import Path
 from .base import BaseKnowledgeLoader, BaseVectorDataBase
-from ..pipeline import OfflineBuildTrace
+import numpy as np
+from ..pipeline import OfflineBuildTrace, BatchTrace
 
 
 def _iter_tsv(file_path: str, chunk_size: int):
@@ -51,21 +53,38 @@ class WikipediaLoader(BaseKnowledgeLoader):
         chunk_lens: list[int] = []
         embed_time_s      = 0.0
         index_time_s      = 0.0
+        batch_traces: list[BatchTrace] = []
 
-        for rows in _iter_tsv(file_path, file_chunk_size):
+        for batch_idx, rows in enumerate(_iter_tsv(file_path, file_chunk_size)):
+            batch_timestamp  = datetime.now().isoformat(timespec="milliseconds")
+            # Capture trained state before add() so we can detect the IVF training
+            # transition. For flat indexes _trained is always True, so this is always
+            # False → is_training_batch will always be False, which is correct.
+            was_trained_before = getattr(self.db, "_trained", True)
+
             texts     = [row["text"] for row in rows]
             metadatas = [{k: v for k, v in row.items() if k != "text"} for row in rows]
 
             chunks = self.chunker.chunk_text(texts, metadatas=metadatas)
             chunk_texts = [c.text for c in chunks]
 
+            # ── chunk length distribution (before skips so we see raw input quality)
+            batch_chunk_lens = [len(c.text) for c in chunks]
+            lens_arr = np.array(batch_chunk_lens, dtype=np.float32) if batch_chunk_lens else np.zeros(1)
+
             t0 = time.time()
             embeddings, skipped = self.embedder.embed(chunk_texts)
-            embed_time_s += time.time() - t0
+            batch_embed_s = time.time() - t0
+            embed_time_s += batch_embed_s
 
+            # ── embedding norm distribution (raw float vectors, before L2 normalisation)
+            emb_arr = np.array(embeddings, dtype=np.float32) if embeddings else np.zeros((1, 1))
+            norms   = np.linalg.norm(emb_arr, axis=1)
+
+            n_chunks_before_skip = len(chunks)
             if skipped:
                 skipped_set = set(skipped)
-                chunks     = [c for i, c in enumerate(chunks) if i not in skipped_set]
+                chunks      = [c for i, c in enumerate(chunks) if i not in skipped_set]
                 total_skipped += len(skipped)
 
             chunk_lens.extend(len(c.text) for c in chunks)
@@ -76,6 +95,38 @@ class WikipediaLoader(BaseKnowledgeLoader):
 
             total_passages += len(rows)
             total_chunks   += len(chunks)
+
+            # True only on the one batch where IVF training fired inside db.add().
+            # Uses len(embeddings) — actual vectors passed to the model — as the
+            # throughput denominator rather than post-skip len(chunks).
+            is_training_batch = (not was_trained_before) and getattr(self.db, "_trained", True)
+
+            n_skipped  = len(skipped)
+            skip_rate  = n_skipped / n_chunks_before_skip if n_chunks_before_skip else 0.0
+            embed_tput = len(embeddings) / batch_embed_s if batch_embed_s > 0 else 0.0
+
+            batch_traces.append(BatchTrace(
+                batch_idx               = batch_idx,
+                timestamp               = batch_timestamp,
+                is_training_batch       = is_training_batch,
+                n_passages              = len(rows),
+                n_chunks                = len(chunks),
+                n_skipped               = n_skipped,
+                skip_rate               = round(skip_rate, 6),
+                embed_throughput_chunks_per_sec = round(embed_tput, 1),
+                chunk_length_mean = round(float(lens_arr.mean()), 1),
+                chunk_length_min  = int(lens_arr.min()),
+                chunk_length_max  = int(lens_arr.max()),
+                chunk_length_p5   = round(float(np.percentile(lens_arr, 5)),  1),
+                chunk_length_p95  = round(float(np.percentile(lens_arr, 95)), 1),
+                embed_norm_mean = round(float(norms.mean()), 4),
+                embed_norm_min  = round(float(norms.min()),  4),
+                embed_norm_max  = round(float(norms.max()),  4),
+                embed_norm_std  = round(float(norms.std()),  4),
+                embed_norm_p5   = round(float(np.percentile(norms, 5)),  4),
+                embed_norm_p95  = round(float(np.percentile(norms, 95)), 4),
+            ))
+
             print(f"  Processed {total_passages:,} passages  ({total_chunks:,} chunks)...")
 
         if hasattr(self.db, "finalize"):
@@ -97,6 +148,7 @@ class WikipediaLoader(BaseKnowledgeLoader):
             index_ms       = round(index_time_s    * 1000, 1),
             total_ms       = round(total_elapsed_s * 1000, 1),
             chunks_per_sec = round(chunks_per_sec, 1),
+            batches        = batch_traces,
         )
         self._print_summary()
 

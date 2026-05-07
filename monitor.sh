@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # =============================================================================
-# monitor.sh  — sample disk I/O + GPU metrics while a command runs.
+# monitor.sh  — sample disk I/O, CPU, RAM, and GPU metrics while a command runs.
 # Usage:
-#   ./monitor.sh results/hardware_${SLURM_JOB_ID}.csv python -m rag_pipeline.example
+#   ./monitor.sh results/hardware_${SLURM_JOB_ID}.csv python offline_phase.py
 # =============================================================================
 
 set -euo pipefail
@@ -18,17 +18,24 @@ mkdir -p "$(dirname "$OUTFILE")"
 
 # ── Tool checks
 HAS_IOSTAT=false;  command -v iostat     &>/dev/null && HAS_IOSTAT=true
+HAS_MPSTAT=false;  command -v mpstat     &>/dev/null && HAS_MPSTAT=true
 HAS_SMI=false;     command -v nvidia-smi &>/dev/null && HAS_SMI=true
 HAS_DCGMI=false;   command -v dcgmi      &>/dev/null && HAS_DCGMI=true
+# free is available on all Linux systems — no check needed
 
 echo "Monitor starting — interval=${INTERVAL}s  device=${DEVICE}"
-echo "  iostat=$([ "$HAS_IOSTAT" = true ] && echo yes || echo no)  nvidia-smi=$([ "$HAS_SMI" = true ] && echo yes || echo no)  dcgmi=$([ "$HAS_DCGMI" = true ] && echo yes || echo no)"
+echo "  iostat=$([ "$HAS_IOSTAT"  = true ] && echo yes || echo no)" \
+     " mpstat=$([ "$HAS_MPSTAT"  = true ] && echo yes || echo no)" \
+     " nvidia-smi=$([ "$HAS_SMI" = true ] && echo yes || echo no)" \
+     " dcgmi=$([ "$HAS_DCGMI"   = true ] && echo yes || echo no)"
 echo "  output: $OUTFILE"
 echo ""
 
 # ── CSV header
 {
   printf "timestamp,"
+  printf "cpu_util_pct,"
+  printf "ram_used_mb,ram_total_mb,ram_avail_mb,ram_used_pct,"
   printf "disk_r_s,disk_w_s,disk_rkB_s,disk_wkB_s,disk_r_await_ms,disk_w_await_ms,disk_util_pct,"
   printf "gpu_mem_used_mb,gpu_mem_total_mb,gpu_mem_free_mb,gpu_util_pct"
   $HAS_DCGMI && printf ",dcgmi_power_w,dcgmi_gpu_util_pct,dcgmi_nvlink_tx_mbs,dcgmi_nvlink_rx_mbs,dcgmi_pcie_tx_mbs,dcgmi_pcie_rx_mbs"
@@ -54,6 +61,21 @@ _monitor_loop() {
   while true; do
     TS=$(date +"%Y-%m-%dT%H:%M:%S")
 
+    # ── CPU (mpstat: 100 - %idle across all cores)
+    CPU_FIELDS=""
+    if $HAS_MPSTAT; then
+      CPU_FIELDS=$(mpstat 1 1 2>/dev/null \
+        | awk '/all/ && /^[0-9]/ { printf "%.1f", 100-$NF }')
+    fi
+    CPU_FIELDS="${CPU_FIELDS:-}"
+
+    # ── RAM (free -m: used, total, available, used%)
+    # $7 = available column (more meaningful than free — excludes buff/cache)
+    RAM_FIELDS=$(free -m 2>/dev/null \
+      | awk '/^Mem:/ { printf "%.0f,%.0f,%.0f,%.1f", $3,$2,$7,$3*100/$2 }')
+    RAM_FIELDS="${RAM_FIELDS:-,,,}"
+
+    # ── Disk I/O (iostat)
     DISK_FIELDS=""
     if $HAS_IOSTAT; then
       DISK_FIELDS=$(iostat -dx 1 1 "$DEVICE" 2>/dev/null \
@@ -61,6 +83,7 @@ _monitor_loop() {
     fi
     DISK_FIELDS="${DISK_FIELDS:-,,,,,,}"
 
+    # ── GPU (nvidia-smi: averaged across all GPUs)
     GPU_FIELDS=""
     if $HAS_SMI; then
       GPU_FIELDS=$(nvidia-smi \
@@ -71,6 +94,7 @@ _monitor_loop() {
     fi
     GPU_FIELDS="${GPU_FIELDS:-,,,}"
 
+    # ── DCGMI (optional extended GPU metrics)
     DCGMI_FIELDS=""
     if $HAS_DCGMI; then
       DCGMI_FIELDS=$(dcgmi dmon -e 203,204,155,1001,1002,1009,1010 -c 1 2>/dev/null \
@@ -78,7 +102,9 @@ _monitor_loop() {
                END  { if(n) printf ",%.1f,%.1f,%.1f,%.1f,%.1f,%.1f", pw/n,gu/n,ntx/n,nrx/n,ptx/n,prx/n }')
     fi
 
-    printf "%s,%s,%s%s\n" "$TS" "$DISK_FIELDS" "$GPU_FIELDS" "$DCGMI_FIELDS" >> "$OUTFILE"
+    printf "%s,%s,%s,%s,%s%s\n" \
+      "$TS" "$CPU_FIELDS" "$RAM_FIELDS" "$DISK_FIELDS" "$GPU_FIELDS" "$DCGMI_FIELDS" \
+      >> "$OUTFILE"
     echo $(( $(cat "$SAMPLES_FILE") + 1 )) > "$SAMPLES_FILE"
     sleep "$INTERVAL"
   done
