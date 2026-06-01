@@ -183,7 +183,7 @@ class WikipediaLoader(BaseKnowledgeLoader):
             lens_arr = np.array(batch_chunk_lens, dtype=np.float32) if batch_chunk_lens else np.zeros(1)
 
             t0 = time.time()
-            embeddings, skipped = self.embedder.embed(chunk_texts)
+            embeddings, skipped = self.embedder.embed(chunk_texts, batch_size=embed_batch_size)
             batch_embed_s  = time.time() - t0
             embed_time_s  += batch_embed_s
 

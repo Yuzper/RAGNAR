@@ -338,10 +338,21 @@ class EvalReport:
         }
 
 
+# Default cutoff for retrieval metrics (precision/recall/ndcg/hit @k).
+# Must stay well below retriever_top_k — otherwise the metric window equals the
+# candidate pool, every retrieved-relevant chunk falls inside it, and recall_at_k
+# collapses to a constant (the old behaviour when k defaulted to retriever_top_k).
+DEFAULT_RETRIEVAL_K = 10
+
+
 class PipelineEvaluator:
     def __init__(self, pipeline: RAGPipeline, retrieval_k: int | None = None):
         self.pipeline = pipeline
-        self.retrieval_k = retrieval_k if retrieval_k is not None else self.pipeline.retriever.retriever_top_k
+        top_k = self.pipeline.retriever.retriever_top_k
+        if retrieval_k is not None:
+            self.retrieval_k = retrieval_k
+        else:
+            self.retrieval_k = min(DEFAULT_RETRIEVAL_K, top_k)
 
     def run(
         self,

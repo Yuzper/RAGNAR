@@ -11,12 +11,12 @@ job_id = os.environ.get("SLURM_JOB_ID") or dt.datetime.now().strftime("%Y%m%d_%H
 
 # ── Config ───────────────────────────
 DATA_PATH        = "data/wikiDump/psgs_w100.tsv"
-EMBEDDER_MODEL   = "multi-qa-mpnet-base-dot-v1" #"all-MiniLM-L6-v2"
+EMBEDDER_MODEL   = "all-MiniLM-L6-v2" #"multi-qa-mpnet-base-dot-v1" #"all-MiniLM-L6-v2"
 INDEX_TYPE       = "ivf_pq"
 NPROBE           = 64
 M_PQ             = 48
 NBITS_PQ         = 8
-EMBED_BATCH_SIZE = 256
+EMBED_BATCH_SIZE = 512
 FILE_CHUNK_SIZE  = 5_000
 
 # ── Checkpoint config ─────────────────
@@ -38,14 +38,26 @@ index_path = f"results/FAISSDB_{job_id}.index"
 # saved checkpoint — this initial vector_db is discarded in that case.
 chunker  = PreChunkedChunker()
 embedder = SentenceTransformerEmbedder(EMBEDDER_MODEL)
+# Metric — match this to how the embedder model was trained:
+#   "cosine" : vectors are L2-normalised, then ranked by inner product.
+#              Use for models tuned on cosine similarity, e.g. all-MiniLM-L6-v2,
+#              all-mpnet-base-v2, *-cos-v1. Safe default for most ST models.
+#   "dot"    : raw (un-normalised) inner product. Use for models trained with a
+#              dot-product objective, e.g. multi-qa-mpnet-base-dot-v1 — these
+#              encode relevance partly in vector magnitude, which cosine discards.
+#   "l2"     : Euclidean distance. Rarely needed for normalised text embeddings;
+#              mainly for models/data where absolute distance is meaningful.
+# The chosen metric is persisted with the index and restored automatically at
+# query time, so the online phase always scores the same way it was built.
 vector_db = FAISSDB(
-    dimension  = embedder.dimension,
-    metric     = "cosine",
-    use_gpu    = True,
-    index_type = INDEX_TYPE,
-    nprobe     = NPROBE,
-    m_pq       = M_PQ,
-    nbits_pq   = NBITS_PQ,
+    dimension     = embedder.dimension,
+    metric        = "cosine",   # cosine: all-MiniLM-L6-v2, all-mpnet-base-v2, *-cos-v1 | dot: multi-qa-mpnet-base-dot-v1
+    use_gpu       = True,
+    index_type    = INDEX_TYPE,
+    nprobe        = NPROBE,
+    m_pq          = M_PQ,
+    nbits_pq      = NBITS_PQ,
+    embedder_name = EMBEDDER_MODEL,
 )
 
 print("═" * 54)

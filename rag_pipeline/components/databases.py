@@ -42,6 +42,7 @@ class FAISSDB(BaseVectorDataBase):
         m_pq:       int  = 96,           # IVF_PQ: subquantizers (must divide dimension)
         nbits_pq:   int  = 8,            # IVF_PQ: bits per subquantizer
         train_size: int  = 262_144,      # IVF: vectors to buffer before auto-training
+        embedder_name: str | None = None, # model that produced the vectors (persisted for query-time validation)
     ):
         _VALID = {"flat", "ivf_flat", "ivf_pq", "ivf_sq"}
         if index_type not in _VALID:
@@ -62,6 +63,7 @@ class FAISSDB(BaseVectorDataBase):
         self.m_pq       = m_pq
         self.nbits_pq   = nbits_pq
         self.train_size = train_size
+        self.embedder_name = embedder_name
 
         self._chunks: list[Chunk] = []
 
@@ -82,18 +84,19 @@ class FAISSDB(BaseVectorDataBase):
 
     def _build_cpu_index(self) -> faiss.Index:
         """Return a new, untrained CPU index of the configured type."""
-        metric_flag = (
-            faiss.METRIC_INNER_PRODUCT if self.metric == "cosine" else faiss.METRIC_L2
-        )
+        # "cosine" (vectors L2-normalised in add/search) and "dot" (raw vectors)
+        # both rank by inner product; only "l2" uses Euclidean distance.
+        use_ip = self.metric in ("cosine", "dot")
+        metric_flag = faiss.METRIC_INNER_PRODUCT if use_ip else faiss.METRIC_L2
         if self.index_type == "flat":
             return (
                 faiss.IndexFlatIP(self.dimension)
-                if self.metric == "cosine"
+                if use_ip
                 else faiss.IndexFlatL2(self.dimension)
             )
         quantizer = (
             faiss.IndexFlatIP(self.dimension)
-            if self.metric == "cosine"
+            if use_ip
             else faiss.IndexFlatL2(self.dimension)
         )
         if self.index_type == "ivf_flat":
@@ -149,15 +152,26 @@ class FAISSDB(BaseVectorDataBase):
 
     def _set_nprobe(self, index: faiss.Index) -> None:
         """
-        Apply self.nprobe to an IVF index (CPU or GPU wrapper).
-        Converts to CPU first when on GPU so the attribute write is reliable
-        across all GPU wrapper types (GpuIndexIVFFlat, GpuIndexIVFPQ, etc.).
+        Apply self.nprobe to the *live* IVF index (CPU or GPU).
+
+        The earlier implementation converted a GPU index to CPU and wrote
+        nprobe on the throwaway copy, so the setting never reached the GPU
+        index and searches silently ran at the FAISS default (nprobe=1),
+        crippling recall. GPU indexes must be tuned via GpuParameterSpace
+        (or a direct attribute write) on the live object.
         """
         if self.index_type == "flat":
             return
-        target = self._faiss.index_gpu_to_cpu(index) if self._is_on_gpu else index
+        if self._is_on_gpu:
+            try:
+                self._faiss.GpuParameterSpace().set_index_parameter(
+                    index, "nprobe", self.nprobe
+                )
+                return
+            except Exception:
+                pass  # fall through to direct attribute write
         try:
-            target.nprobe = self.nprobe
+            index.nprobe = self.nprobe
         except Exception:
             pass  # unsupported index variant — silently skip
 
@@ -255,11 +269,12 @@ class FAISSDB(BaseVectorDataBase):
             if idx == -1:
                 continue
             chunk = self._chunks[idx]
-            chunk.score = (
-                (float(score) + 1.0) / 2.0   # cosine IP → [0, 1]
-                if self.metric == "cosine"
-                else 1.0 / (1.0 + float(score))  # L2 → similarity
-            )
+            if self.metric == "cosine":
+                chunk.score = (float(score) + 1.0) / 2.0      # cosine IP → [0, 1]
+            elif self.metric == "dot":
+                chunk.score = float(score)                    # raw inner product
+            else:
+                chunk.score = 1.0 / (1.0 + float(score))      # L2 → similarity
             results.append(chunk)
         return results
 
@@ -287,6 +302,7 @@ class FAISSDB(BaseVectorDataBase):
                     "m_pq":       self.m_pq,
                     "nbits_pq":   self.nbits_pq,
                     "train_size": self.train_size,
+                    "embedder_name": self.embedder_name,
                 },
                 f,
             )
@@ -311,6 +327,7 @@ class FAISSDB(BaseVectorDataBase):
             m_pq       = meta.get("m_pq", 96),
             nbits_pq   = meta.get("nbits_pq", 8),
             train_size = meta.get("train_size", 262_144),
+            embedder_name = meta.get("embedder_name"),
         )
         cpu_index   = faiss.read_index(f"{path}.faiss")
         db._index   = db._to_gpu(cpu_index)   # sets db._is_on_gpu
@@ -365,6 +382,12 @@ class ChromaDB(BaseVectorDataBase):
     """
 
     def __init__(self, collection_name: str = "ragnar", persist_dir: str = "./chroma_db"):
+        try:
+            import chromadb
+        except ImportError as exc:
+            raise ImportError(
+                "ChromaDB backend requires the chromadb package — `pip install chromadb`"
+            ) from exc
         self._client = chromadb.PersistentClient(path=persist_dir)
         self._collection = self._client.get_or_create_collection(
             name=collection_name,

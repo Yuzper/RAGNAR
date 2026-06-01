@@ -20,8 +20,24 @@ class SentenceTransformerEmbedder(BaseEmbedder):
         device = "cuda" if torch.cuda.is_available() else "cpu"
         self.model = SentenceTransformer(model_name, device=device)
         self._model_name = model_name
-        self._dim = self.model.get_embedding_dimension()
+        self._dim = self._resolve_dim()
         print(f"[SentenceTransformerEmbedder] Using device: {device}")
+
+    def _resolve_dim(self) -> int:
+        """
+        Return the model's output dimension, tolerant of API differences across
+        sentence-transformers versions (get_sentence_embedding_dimension is the
+        canonical name; get_embedding_dimension exists in some builds).
+        """
+        for attr in ("get_sentence_embedding_dimension", "get_embedding_dimension"):
+            fn = getattr(self.model, attr, None)
+            if callable(fn):
+                dim = fn()
+                if dim is not None:
+                    return dim
+        raise ValueError(
+            f"Could not determine embedding dimension for model {self._model_name!r}."
+        )
 
     def embed(self, texts: list[str], batch_size: int = 256) -> tuple[list[list[float]], list[int]]:
         """
@@ -51,10 +67,7 @@ class SentenceTransformerEmbedder(BaseEmbedder):
 
     @property
     def dimension(self) -> int:
-        dim = self.model.get_embedding_dimension()
-        if dim is None:
-            raise ValueError(f"Could not determine embedding dimension from model. {self._model_name}")
-        self._dim = dim
+        self._dim = self._resolve_dim()
         return self._dim
 
     def __repr__(self):
