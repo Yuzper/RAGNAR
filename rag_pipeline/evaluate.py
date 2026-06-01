@@ -7,7 +7,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional, cast
 from .pipeline import RAGPipeline, RunTrace
-from .metrics import *
+from .metrics import *  # includes ndcg_at_k, reciprocal_rank, rouge_l, etc.
 from rag_pipeline import pipeline
 
 # ========== Relevance helper ==========
@@ -107,7 +107,7 @@ class RetrievalEvaluator:
         self, traces: list[RunTrace], samples: list[EvalSample], k: int = 5,
     ) -> dict[str, float | None]:
         latencies = [t.latency_ms.get("retrieve", 0.0) for t in traces]
-        precisions, recalls, rrs, hits = [], [], [], []
+        precisions, recalls, rrs, hits, ndcgs = [], [], [], [], []
 
         for trace, sample in zip(traces, samples):
             if sample.gold_answer is None:
@@ -116,24 +116,31 @@ class RetrievalEvaluator:
             gold_answers = sample.metadata.get("all_answers", [sample.gold_answer])
             relevance = _chunk_relevance_by_text(trace.retrieved_chunks, gold_answers)
             top_k_rel = relevance[:k]
-            n_rel = sum(top_k_rel)
+            n_rel     = sum(top_k_rel)
 
             precisions.append(n_rel / k if k else 0.0)
             total_relevant = max(sum(relevance), 1)
             recalls.append(min(n_rel / total_relevant, 1.0))
-            pseudo_ids = [str(i) for i in range(len(relevance))]
-            relevant_pseudo_ids = {str(i) for i, r in enumerate(relevance) if r}
-            rrs.append(reciprocal_rank(pseudo_ids, relevant_pseudo_ids))
             hits.append(float(any(top_k_rel)))
+            ndcgs.append(ndcg_at_k(relevance, k))
+
+            # MRR — find rank of first relevant in full retrieved list
+            rr = 0.0
+            for rank, rel in enumerate(relevance, start=1):
+                if rel:
+                    rr = 1.0 / rank
+                    break
+            rrs.append(rr)
 
         return {
             "avg_latency_ms": statistics.mean(latencies),
             "p95_latency_ms": _p95(latencies),
-            "k": k,
+            "k":              k,
             "precision_at_k": statistics.mean(precisions) if precisions else None,
             "recall_at_k":    statistics.mean(recalls)    if recalls    else None,
             "mrr":            statistics.mean(rrs)        if rrs        else None,
             "hit_rate":       statistics.mean(hits)       if hits       else None,
+            "ndcg_at_k":      statistics.mean(ndcgs)      if ndcgs      else None,
         }
 
 
@@ -142,7 +149,10 @@ class RerankerEvaluator:
         self, traces: list[RunTrace], samples: list[EvalSample],
     ) -> dict[str, float | None]:
         latencies = [t.latency_ms.get("rerank", 0.0) for t in traces]
-        mrr_before_list, mrr_after_list = [], []
+        mrr_before_list,  mrr_after_list  = [], []
+        ndcg_before_list, ndcg_after_list = [], []
+        hit_before_list,  hit_after_list  = [], []
+        prec_before_list, prec_after_list = [], []
 
         for trace, sample in zip(traces, samples):
             if sample.gold_answer is None:
@@ -152,26 +162,56 @@ class RerankerEvaluator:
             rel_before = _chunk_relevance_by_text(trace.retrieved_chunks, gold_answers)
             rel_after  = _chunk_relevance_by_text(trace.reranked_chunks,  gold_answers)
 
-            if rel_before is not None and rel_after is not None:
-                def _rr(relevance: list[bool]) -> float:
-                    for rank, rel in enumerate(relevance, start=1):
-                        if rel:
-                            return 1.0 / rank
-                    return 0.0
+            k = len(rel_after)   # reranker_top_k — compare both over same window
 
-                mrr_before_list.append(_rr(rel_before))
-                mrr_after_list.append(_rr(rel_after))
+            # MRR
+            def _rr(relevance: list[bool]) -> float:
+                for rank, rel in enumerate(relevance, start=1):
+                    if rel:
+                        return 1.0 / rank
+                return 0.0
 
-        mrr_delta = None
-        if mrr_before_list:
-            mrr_delta = statistics.mean(mrr_after_list) - statistics.mean(mrr_before_list)
+            mrr_before_list.append(_rr(rel_before))
+            mrr_after_list.append(_rr(rel_after))
+
+            # NDCG
+            ndcg_before_list.append(ndcg_at_k(rel_before, k))
+            ndcg_after_list.append(ndcg_at_k(rel_after,   k))
+
+            # Hit rate — did the window contain at least one relevant chunk?
+            hit_before_list.append(float(any(rel_before[:k])))
+            hit_after_list.append(float(any(rel_after)))
+
+            # Precision — fraction of window that is relevant
+            prec_before_list.append(sum(rel_before[:k]) / k if k else 0.0)
+            prec_after_list.append(sum(rel_after) / k        if k else 0.0)
+
+        def _mean(lst: list) -> float | None:
+            return statistics.mean(lst) if lst else None
+
+        def _delta(before: list, after: list) -> float | None:
+            if not before:
+                return None
+            return statistics.mean(after) - statistics.mean(before)
 
         return {
-            "avg_latency_ms": statistics.mean(latencies),
-            "p95_latency_ms": _p95(latencies),
-            "mrr_before":     statistics.mean(mrr_before_list) if mrr_before_list else None,
-            "mrr_after":      statistics.mean(mrr_after_list)  if mrr_after_list  else None,
-            "mrr_delta":      mrr_delta,
+            "avg_latency_ms":   statistics.mean(latencies),
+            "p95_latency_ms":   _p95(latencies),
+            # MRR
+            "mrr_before":       _mean(mrr_before_list),
+            "mrr_after":        _mean(mrr_after_list),
+            "mrr_delta":        _delta(mrr_before_list,  mrr_after_list),
+            # NDCG
+            "ndcg_before":      _mean(ndcg_before_list),
+            "ndcg_after":       _mean(ndcg_after_list),
+            "ndcg_delta":       _delta(ndcg_before_list, ndcg_after_list),
+            # Hit rate
+            "hit_rate_before":  _mean(hit_before_list),
+            "hit_rate_after":   _mean(hit_after_list),
+            # Precision
+            "precision_before": _mean(prec_before_list),
+            "precision_after":  _mean(prec_after_list),
+            "precision_delta":  _delta(prec_before_list, prec_after_list),
         }
 
 
@@ -258,13 +298,15 @@ class EvalReport:
             f"    Latency avg/p95 : {self.retrieval['avg_latency_ms']:.1f} / {self.retrieval['p95_latency_ms']:.1f} ms",
             f"    Hit rate        : {show(self.retrieval.get('hit_rate'))}",
             f"    MRR             : {show(self.retrieval.get('mrr'))}",
+            f"    NDCG@k          : {show(self.retrieval.get('ndcg_at_k'))}",
             f"    Precision@k     : {show(self.retrieval.get('precision_at_k'))}",
             f"    Recall@k        : {show(self.retrieval.get('recall_at_k'))}",
             sep, "  RERANKING",
             f"    Latency avg/p95 : {self.reranking['avg_latency_ms']:.1f} / {self.reranking['p95_latency_ms']:.1f} ms",
-            f"    MRR before      : {show(self.reranking.get('mrr_before'))}",
-            f"    MRR after       : {show(self.reranking.get('mrr_after'))}",
-            f"    MRR delta       : {show(self.reranking.get('mrr_delta'))}",
+            f"    MRR before/after: {show(self.reranking.get('mrr_before'))} → {show(self.reranking.get('mrr_after'))}  (Δ {show(self.reranking.get('mrr_delta'))})",
+            f"    NDCG before/after: {show(self.reranking.get('ndcg_before'))} → {show(self.reranking.get('ndcg_after'))}  (Δ {show(self.reranking.get('ndcg_delta'))})",
+            f"    Hit  before/after: {show(self.reranking.get('hit_rate_before'))} → {show(self.reranking.get('hit_rate_after'))}",
+            f"    Prec before/after: {show(self.reranking.get('precision_before'))} → {show(self.reranking.get('precision_after'))}  (Δ {show(self.reranking.get('precision_delta'))})",
             sep, "  GENERATION",
             f"    Latency avg/p95 : {self.generation['avg_latency_ms']:.1f} / {self.generation['p95_latency_ms']:.1f} ms",
             f"    BERTScore F1    : {show(self.generation.get('avg_bert_score'))}",
@@ -311,10 +353,14 @@ class PipelineEvaluator:
         t_start = time.time()
 
         traces: list[RunTrace] = []
-        for sample in dataset.samples:
+        for i, sample in enumerate(dataset.samples):
             trace = cast(RunTrace, self.pipeline.query(sample.query, trace=True))
             traces.append(trace)
-
+            if (i + 1) % 10 == 0:
+                elapsed = time.time() - t_start
+                rate = (i + 1) / elapsed
+                remaining = (len(dataset) - (i + 1)) / rate
+                print(f"  [{i+1}/{len(dataset)}]  {elapsed:.0f}s elapsed  ~{remaining:.0f}s remaining", flush=True)
         samples = list(dataset.samples)
 
         # Wall-clock bookends across all queries
@@ -379,6 +425,7 @@ def compare_reports(reports: dict[str, EvalReport]) -> str:
         "RETRIEVAL",
         row("hit rate",          lambda r: r.retrieval.get("hit_rate")),
         row("MRR",               lambda r: r.retrieval.get("mrr")),
+        row("NDCG@k",            lambda r: r.retrieval.get("ndcg_at_k")),
         row("precision@k",       lambda r: r.retrieval.get("precision_at_k")),
         row("recall@k",          lambda r: r.retrieval.get("recall_at_k")),
         row("avg latency (ms)",  lambda r: r.retrieval.get("avg_latency_ms")),
@@ -386,6 +433,14 @@ def compare_reports(reports: dict[str, EvalReport]) -> str:
         row("MRR before",        lambda r: r.reranking.get("mrr_before")),
         row("MRR after",         lambda r: r.reranking.get("mrr_after")),
         row("MRR delta",         lambda r: r.reranking.get("mrr_delta")),
+        row("NDCG before",       lambda r: r.reranking.get("ndcg_before")),
+        row("NDCG after",        lambda r: r.reranking.get("ndcg_after")),
+        row("NDCG delta",        lambda r: r.reranking.get("ndcg_delta")),
+        row("hit rate before",   lambda r: r.reranking.get("hit_rate_before")),
+        row("hit rate after",    lambda r: r.reranking.get("hit_rate_after")),
+        row("precision before",  lambda r: r.reranking.get("precision_before")),
+        row("precision after",   lambda r: r.reranking.get("precision_after")),
+        row("precision delta",   lambda r: r.reranking.get("precision_delta")),
         row("avg latency (ms)",  lambda r: r.reranking.get("avg_latency_ms")),
         "GENERATION",
         row("BERTScore F1",      lambda r: r.generation.get("avg_bert_score")),

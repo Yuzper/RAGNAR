@@ -5,13 +5,14 @@
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=160G
 #SBATCH --nodes=1
-#SBATCH --nodelist=cn[3,4,5,6,7,9,10,11,12,13,18,19]
+#SBATCH --nodelist=cn[19]
 #SBATCH --gres=gpu:1
 #SBATCH --time=24:00:00
 #SBATCH --partition=scavenge
 #SBATCH --mail-type=fail,end
 
 DB_PATH="${1:?Usage: sbatch sbatch_online.sh <db_path>  e.g. results/FAISSDB_12345678.index}"
+DB_PATH="/home/jete/${DB_PATH}"
 
 module --ignore_cache load CUDA/12.6.0
 module --ignore_cache load "ollama/0.6.0-GCCcore-13.3.0-CUDA-12.6.0"
@@ -43,12 +44,17 @@ until curl -s http://localhost:11434 > /dev/null; do
 done
 echo "Ollama PID: $OLLAMA_PID"
 
+echo "Warming up llama model..."
+ollama pull llama3.2
+ollama run llama3.2 "hi" > /dev/null 2>&1
+echo "Ollama ready."
+
 # --- Run online evaluation ---
 echo ""
 echo "===== RUNNING ONLINE EVALUATION ====="
 cd RAGNAR
 ./monitor.sh results/hardware_online_${SLURM_JOB_ID}.csv \
-    python online_phase.py --db "$DB_PATH"
+    python -m rag_pipeline.online_phase --db "$DB_PATH"
 
 echo ""
 echo "===== DONE ====="

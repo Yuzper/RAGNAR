@@ -21,7 +21,7 @@ args = parser.parse_args()
 job_id = os.environ.get("SLURM_JOB_ID") or dt.datetime.now().strftime("%Y%m%d_%H%M%S")
 
 # ── Config block ──────────────────────────
-RETRIEVER_TOP_K  = 30
+RETRIEVER_TOP_K  = 100
 RERANKER_MODEL   = "cross-encoder/ms-marco-MiniLM-L-6-v2"
 RERANKER_TOP_K   = 10
 EMBEDDER_MODEL   = "all-MiniLM-L6-v2"
@@ -63,6 +63,7 @@ pipeline_2 = RAGPipeline(
 )
 
 dataset = loadDatasetNQ(args.dataset)
+print("Dataset loaded...")
 
 report_1 = PipelineEvaluator(pipeline_1).run(dataset, f"results/pipeline_1_{job_id}.json")
 print("Pipeline 1 evaluation complete.")

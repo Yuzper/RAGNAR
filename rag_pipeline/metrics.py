@@ -40,6 +40,23 @@ def reciprocal_rank(retrieved_ids: list[str], relevant_ids: set[str]) -> float:
             return 1.0 / rank
     return 0.0
 
+
+def ndcg_at_k(relevance: list[bool], k: int) -> float:
+    """
+    Normalised Discounted Cumulative Gain at k.
+    `relevance` is an ordered list of bools (True = relevant) in rank order.
+    Rewards having multiple relevant chunks ranked highly, not just the first.
+    """
+    import math
+
+    def dcg(hits: list[bool]) -> float:
+        return sum(h / math.log2(i + 2) for i, h in enumerate(hits[:k]))
+
+    actual_dcg = dcg(relevance)
+    # Ideal: all relevant docs at the top
+    ideal_dcg  = dcg(sorted(relevance, reverse=True))
+    return actual_dcg / ideal_dcg if ideal_dcg > 0 else 0.0
+
 # =====================================================================
 # Generation
 # =====================================================================
@@ -69,4 +86,3 @@ def tokens_per_second(completion_tokens: int | None, eval_duration_ns: int | Non
     if not completion_tokens or not eval_duration_ns or eval_duration_ns <= 0:
         return None
     return completion_tokens / (eval_duration_ns / 1_000_000_000) # Convert nanoseconds to seconds
-

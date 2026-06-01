@@ -66,13 +66,17 @@ class FAISSDB(BaseVectorDataBase):
         self._chunks: list[Chunk] = []
 
         # IVF training state
-        self._trained:      bool            = (index_type == "flat")
+        self._trained:      bool             = (index_type == "flat")
         self._buf_vecs:     list[np.ndarray] = []
         self._buf_chunks:   list[Chunk]      = []
 
+        # Tracks whether self._index is currently on GPU.
+        # Set authoritatively inside _to_gpu so every code path agrees.
+        self._is_on_gpu: bool = False
+
         # Flat indexes are ready immediately; IVF starts as untrained CPU index
-        cpu_index    = self._build_cpu_index()
-        self._index  = self._to_gpu(cpu_index) if index_type == "flat" else cpu_index
+        cpu_index   = self._build_cpu_index()
+        self._index = self._to_gpu(cpu_index) if index_type == "flat" else cpu_index
 
     # ── Index construction ─────────────────────────────────────────────────────
 
@@ -108,38 +112,54 @@ class FAISSDB(BaseVectorDataBase):
     # ── GPU helpers ────────────────────────────────────────────────────────────
 
     def _to_gpu(self, cpu_index: faiss.Index) -> faiss.Index:
-        """Move a trained CPU index to GPU 0.  Falls back to CPU on failure."""
+        """
+        Move a trained CPU index to GPU 0.  Falls back to CPU on failure.
+        Always updates self._is_on_gpu so the rest of the class has a reliable
+        signal for whether index_gpu_to_cpu is needed.
+        """
         if not self.use_gpu:
+            self._is_on_gpu = False
             return cpu_index
         ngpu = self._faiss.get_num_gpus()
         if ngpu == 0:
             print("[FAISSDB] No GPU found — using CPU index")
+            self._is_on_gpu = False
             return cpu_index
         try:
             res       = self._faiss.StandardGpuResources()
             gpu_index = self._faiss.index_cpu_to_gpu(res, 0, cpu_index)
             print(f"[FAISSDB] Index moved to GPU 0 ({ngpu} GPU(s) available)")
+            self._is_on_gpu = True
             return gpu_index
         except Exception as exc:
             print(f"[FAISSDB] GPU transfer failed ({exc}) — falling back to CPU")
+            self._is_on_gpu = False
             return cpu_index
 
     def _as_cpu_index(self) -> faiss.Index:
-        """Return the current index as a CPU index (required for save / training)."""
-        if self._faiss.get_num_gpus() > 0 and hasattr(self._index, "index"):
+        """
+        Return the current index as a CPU index (required for save / training).
+        Uses self._is_on_gpu — set authoritatively in _to_gpu — rather than
+        inspecting index attributes, which differ across GPU wrapper types and
+        caused the original serialization crash for IVF indexes.
+        """
+        if self._is_on_gpu:
             return self._faiss.index_gpu_to_cpu(self._index)
         return self._index
 
     def _set_nprobe(self, index: faiss.Index) -> None:
-        """Apply self.nprobe to an IVF index (CPU or GPU wrapper)."""
+        """
+        Apply self.nprobe to an IVF index (CPU or GPU wrapper).
+        Converts to CPU first when on GPU so the attribute write is reliable
+        across all GPU wrapper types (GpuIndexIVFFlat, GpuIndexIVFPQ, etc.).
+        """
         if self.index_type == "flat":
             return
-        # GPU wrapper exposes the underlying index via .index
-        target = getattr(index, "index", index)
+        target = self._faiss.index_gpu_to_cpu(index) if self._is_on_gpu else index
         try:
             target.nprobe = self.nprobe
         except Exception:
-            pass  # flat sub-index or unsupported — silently skip
+            pass  # unsupported index variant — silently skip
 
     # ── Training (IVF only) ────────────────────────────────────────────────────
 
@@ -277,6 +297,7 @@ class FAISSDB(BaseVectorDataBase):
         """
         Restore from {path}.faiss and {path}.pkl.
         Index is loaded in CPU format then optionally moved to GPU.
+        _to_gpu sets _is_on_gpu internally, so _set_nprobe is correct immediately after.
         """
         with open(f"{path}.pkl", "rb") as f:
             meta = pickle.load(f)
@@ -292,7 +313,7 @@ class FAISSDB(BaseVectorDataBase):
             train_size = meta.get("train_size", 262_144),
         )
         cpu_index   = faiss.read_index(f"{path}.faiss")
-        db._index   = db._to_gpu(cpu_index)
+        db._index   = db._to_gpu(cpu_index)   # sets db._is_on_gpu
         db._set_nprobe(db._index)
         db._chunks  = meta["chunks"]
         db._trained = True
@@ -317,7 +338,7 @@ class FAISSDB(BaseVectorDataBase):
         return self.size
 
     def __repr__(self) -> str:
-        gpu_str     = "gpu=True" if self.use_gpu and self._faiss.get_num_gpus() > 0 else "gpu=False"
+        gpu_str = "gpu=True" if self._is_on_gpu else "gpu=False"
         if self._trained:
             state = f"size={self.size:,}"
         else:
@@ -427,6 +448,6 @@ class ChromaDB(BaseVectorDataBase):
 
     def __repr__(self):
         return f"ChromaDB(collection='{self._collection_name}', size={self.size})"
-    
+
     def __type__(self):
         return "ChromaDB"

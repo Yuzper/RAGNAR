@@ -1,12 +1,3 @@
-✅ Base
-✅ Chunker
-✅ Embedders
-Retrievers
-✅ Rerankers
-✅ Generators
-✅ Evaluate
-✅ Pipeline
-✅ Example
 
 
 Next Steps.
@@ -26,3 +17,21 @@ Storage vs recall → does larger index actually help?
 
 Attention like text data viz for retreival, which parts was most imporant in ranking.
 How can we use this for future?
+
+
+
+
+----------------
+ewma
+----------------
+
+ - REMEMBER TO ALIGN EMBEDDERS!!!
+
+Offline runs:
+Small embedder: all-MiniLM-L6-v2
+Medium embedder
+
+Online runs:
+Reranker, passthrough and cross-encoder
+
+
