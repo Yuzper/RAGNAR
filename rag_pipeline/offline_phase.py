@@ -1,78 +1,68 @@
 # offline_phase.py
+import argparse
 import datetime as dt
+import json
 import os
 
 from rag_pipeline.components.knowledgeLoader import WikipediaLoader
-from rag_pipeline.components.chunker import PreChunkedChunker
+from rag_pipeline.components.chunker import build_chunker
 from rag_pipeline.components.embedders import SentenceTransformerEmbedder
 from rag_pipeline.components.databases import FAISSDB
+from rag_pipeline.config import ConfigError, RunConfig, add_config_args
+
+parser = argparse.ArgumentParser(description="Build the vector index (offline phase).")
+add_config_args(parser)
+args = parser.parse_args()
+
+try:
+    cfg = RunConfig.load(args.config, args.overrides)
+except ConfigError as exc:
+    raise SystemExit(f"[config] {exc}")
 
 job_id = os.environ.get("SLURM_JOB_ID") or dt.datetime.now().strftime("%Y%m%d_%H%M%S")
-
-# ── Config ───────────────────────────
-DATA_PATH        = "data/wikiDump/psgs_w100.tsv"
-EMBEDDER_MODEL   = "all-MiniLM-L6-v2" #"multi-qa-mpnet-base-dot-v1" #"all-MiniLM-L6-v2"
-INDEX_TYPE       = "ivf_pq"
-NPROBE           = 64
-M_PQ             = 48
-NBITS_PQ         = 8
-EMBED_BATCH_SIZE = 512
-FILE_CHUNK_SIZE  = 5_000
-
-# ── Checkpoint config ─────────────────
-# Save a checkpoint every N batches. Each batch is FILE_CHUNK_SIZE rows,
-# so every 20 batches ≈ 100k passages. Set to 0 to disable.
-CHECKPOINT_EVERY = 20
-CHECKPOINT_PATH  = f"results/checkpoint_{job_id}"
-
-# To resume a crashed run, set RESUME_FROM to the checkpoint path prefix
-# (same value that was used for CHECKPOINT_PATH in the previous run), e.g.:
-#   RESUME_FROM = "results/checkpoint_79116"
-# Leave as None to start fresh.
-RESUME_FROM      = None
-
 index_path = f"results/FAISSDB_{job_id}.index"
 
-# ── Build db (only needed when starting fresh, not when resuming) ─────
-# When resuming, load_and_index replaces self.db internally with the
-# saved checkpoint — this initial vector_db is discarded in that case.
-chunker  = PreChunkedChunker()
-embedder = SentenceTransformerEmbedder(EMBEDDER_MODEL)
-# Metric — match this to how the embedder model was trained:
-#   "cosine" : vectors are L2-normalised, then ranked by inner product.
-#              Use for models tuned on cosine similarity, e.g. all-MiniLM-L6-v2,
-#              all-mpnet-base-v2, *-cos-v1. Safe default for most ST models.
-#   "dot"    : raw (un-normalised) inner product. Use for models trained with a
-#              dot-product objective, e.g. multi-qa-mpnet-base-dot-v1 — these
-#              encode relevance partly in vector magnitude, which cosine discards.
-#   "l2"     : Euclidean distance. Rarely needed for normalised text embeddings;
-#              mainly for models/data where absolute distance is meaningful.
-# The chosen metric is persisted with the index and restored automatically at
-# query time, so the online phase always scores the same way it was built.
+# ── Build db ─────────────────────────────────────────────────────────
+# The build runs start to finish in a single pass — no checkpointing, no
+# resume. It fits comfortably inside the job's time limit, and leaving
+# checkpoint I/O out keeps the reported build timings clean.
+embedder = SentenceTransformerEmbedder(cfg.get("embedder.model"))
+# Built after the embedder: fixed_token sizes chunks in the embedder's own
+# tokenizer, and every strategy is checked against its truncation limit.
+chunker  = build_chunker(cfg, embedder)
+# The metric is persisted with the index and restored at query time, so the
+# online phase always scores the same way the index was built. See the comments
+# in configs/default.yaml for how to match it to the embedder model.
 vector_db = FAISSDB(
     dimension     = embedder.dimension,
-    metric        = "cosine",   # cosine: all-MiniLM-L6-v2, all-mpnet-base-v2, *-cos-v1 | dot: multi-qa-mpnet-base-dot-v1
-    use_gpu       = True,
-    index_type    = INDEX_TYPE,
-    nprobe        = NPROBE,
-    m_pq          = M_PQ,
-    nbits_pq      = NBITS_PQ,
-    embedder_name = EMBEDDER_MODEL,
+    metric        = cfg.get("embedder.metric"),
+    use_gpu       = cfg.get("index.use_gpu"),
+    index_type    = cfg.get("index.type"),
+    nlist         = cfg.get("index.nlist"),
+    nprobe        = cfg.get("online.nprobe"),
+    m_pq          = cfg.get("index.m_pq"),
+    nbits_pq      = cfg.get("index.nbits_pq"),
+    train_size    = cfg.get("index.train_size"),
+    embedder_name = cfg.get("embedder.model"),
+    # Written into the index so an online run can prove it is querying an index
+    # built from the configuration it thinks it was.
+    build_config  = cfg.index_fingerprint(),
 )
 
 print("═" * 54)
 print("  OFFLINE BUILD CONFIG")
 print("═" * 54)
-print(f"  data_path        : {DATA_PATH}")
-print(f"  embedder         : {EMBEDDER_MODEL}  (dim={embedder.dimension})")
-print(f"  chunker          : {chunker}")
-print(f"  index_type       : {INDEX_TYPE}  nprobe={NPROBE}")
-print(f"  m_pq / nbits     : {M_PQ} / {NBITS_PQ}")
-print(f"  embed_batch_size : {EMBED_BATCH_SIZE}")
-print(f"  file_chunk_size  : {FILE_CHUNK_SIZE}")
-print(f"  checkpoint_every : {CHECKPOINT_EVERY} batches  ({CHECKPOINT_EVERY * FILE_CHUNK_SIZE:,} passages)")
-print(f"  checkpoint_path  : {CHECKPOINT_PATH}")
-print(f"  resume_from      : {RESUME_FROM or '(none — fresh start)'}")
+print(cfg.describe())
+print(f"  data_path        : {cfg.get('offline.data_path')}")
+print(f"  embedder         : {cfg.get('embedder.model')}  (dim={embedder.dimension})")
+print(f"  metric           : {cfg.get('embedder.metric')}")
+print(f"  chunker          : {cfg.get('chunker.type')}  {chunker}")
+print(f"  index_type       : {cfg.get('index.type')}  nlist={cfg.get('index.nlist')}")
+print(f"  m_pq / nbits     : {cfg.get('index.m_pq')} / {cfg.get('index.nbits_pq')}")
+print(f"  train_size       : {cfg.get('index.train_size')}")
+print(f"  embed_batch_size : {cfg.get('offline.embed_batch_size')}")
+print(f"  file_chunk_size  : {cfg.get('offline.file_chunk_size')}")
+print(f"  prepend_titles   : {cfg.get('offline.prepend_titles')}")
 print(f"  job_id           : {job_id}")
 print(f"  output_index     : {index_path}")
 print("═" * 54)
@@ -80,14 +70,18 @@ print("═" * 54)
 loader = WikipediaLoader(db=vector_db, embedder=embedder, chunker=chunker)
 
 vector_db = loader.load_and_index(
-    DATA_PATH,
-    embed_batch_size = EMBED_BATCH_SIZE,
-    file_chunk_size  = FILE_CHUNK_SIZE,
+    cfg.get("offline.data_path"),
+    embed_batch_size = cfg.get("offline.embed_batch_size"),
+    file_chunk_size  = cfg.get("offline.file_chunk_size"),
     output_path      = f"results/offline_FAISSDB_{job_id}.json",
-    checkpoint_every = CHECKPOINT_EVERY,
-    checkpoint_path  = CHECKPOINT_PATH,
-    resume_from      = RESUME_FROM,
+    prepend_titles   = cfg.get("offline.prepend_titles"),
 )
 
 vector_db.save(index_path)
-print(f"Done. To run online phase:\n  python online_phase.py --db {index_path}")
+
+# Full provenance next to the index, so the build is identifiable even if the
+# index is later moved away from its results/ directory.
+with open(f"{index_path}_config.json", "w", encoding="utf-8") as f:
+    json.dump(cfg.provenance({"job_id": job_id, "index_path": index_path}), f, indent=2)
+
+print(f"Done. To run online phase:\n  python -m rag_pipeline.online_phase --config {args.config} --db {index_path}")

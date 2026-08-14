@@ -11,10 +11,23 @@
 #SBATCH --exclusive
 #SBATCH --mail-type=fail,end
 
+# Fail on the first error instead of pressing on. Matches run_rag_online.job and
+# run_rag_env.job. -u is deliberately omitted: artifact names below read
+# SLURM_JOB_ID directly, and aborting on an unset one would break running this
+# script by hand for no safety gain.
+set -eo pipefail
+
+# Usage: sbatch run_rag_offline.job [config] [--set k=v ...]
+CONFIG="${1:-configs/default.yaml}"
+if [[ $# -gt 1 ]]; then shift 1; OVERRIDES=("$@"); else OVERRIDES=(); fi
+
 module --ignore_cache load CUDA/12.6.0
 
 source ~/Miniconda3-py312_25.9.1-3-Linux-x86_64_MAIN/etc/profile.d/conda.sh
 conda activate rag_gpu
+
+python -c "import torch, sentence_transformers, faiss, numpy" \
+    || { echo "rag_gpu env is missing offline dependencies - run run_rag_env.job"; exit 1; }
 
 echo "===== SLURM ENV ====="
 echo "Job ID             : $SLURM_JOB_ID"
@@ -27,13 +40,16 @@ echo "Started at         : $(date +%Y-%m-%dT%H:%M:%S)"
 # --- Run offline build ---
 echo ""
 echo "===== RUNNING OFFLINE BUILD ====="
-cd RAGNAR
+cd RAGNAR || { echo "Cannot cd to RAGNAR from $PWD - aborting"; exit 1; }
+mkdir -p results
+echo "Config             : $CONFIG"
+echo "Overrides          : ${OVERRIDES[*]:-none}"
 ./monitor.sh results/hardware_offline_${SLURM_JOB_ID}.csv \
-    python -m rag_pipeline.offline_phase
+    python -m rag_pipeline.offline_phase --config "$CONFIG" "${OVERRIDES[@]}"
 
 echo ""
 echo "===== DONE ====="
 echo "Finished at: $(date +%Y-%m-%dT%H:%M:%S)"
 echo ""
 echo "To run the online phase against this index:"
-echo "  sbatch sbatch_online.sh results/FAISSDB_${SLURM_JOB_ID}.index"
+echo "  sbatch run_rag_online.job results/FAISSDB_${SLURM_JOB_ID}.index"

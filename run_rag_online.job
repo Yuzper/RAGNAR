@@ -11,8 +11,24 @@
 #SBATCH --exclusive
 #SBATCH --mail-type=fail,end
 
-DB_PATH="${1:?Usage: sbatch sbatch_online.sh <db_path>  e.g. results/FAISSDB_12345678.index}"
-DB_PATH="/home/jete/${DB_PATH}"
+set -eo pipefail
+
+DB_PATH="${1:?Usage: sbatch run_rag_online.job <db_path> [config] [name] [--set k=v ...]}"
+CONFIG="${2:-configs/default.yaml}"
+RUN_NAME="${3:-run}"
+# Anything after the first three args is passed straight through as --set flags.
+# Guarded because a bare `shift 3` with fewer args fails, and `set -e` would
+# then kill the job before it started.
+if [[ $# -gt 3 ]]; then shift 3; OVERRIDES=("$@"); else OVERRIDES=(); fi
+
+cd RAGNAR || { echo "Cannot cd to RAGNAR from $PWD - aborting"; exit 1; }
+
+# Check the index before paying for Ollama startup, the model pull and the warm-up.
+# A missing index used to surface only after all of that, at load time.
+if [[ ! -f "${DB_PATH}.faiss" || ! -f "${DB_PATH}.pkl" ]]; then
+    echo "Index not found: ${DB_PATH}.faiss / ${DB_PATH}.pkl (looked in $PWD)"
+    exit 1
+fi
 
 module --ignore_cache load CUDA/12.6.0
 module --ignore_cache load "ollama/0.6.0-GCCcore-13.3.0-CUDA-12.6.0"
@@ -20,48 +36,81 @@ module --ignore_cache load "ollama/0.6.0-GCCcore-13.3.0-CUDA-12.6.0"
 source ~/Miniconda3-py312_25.9.1-3-Linux-x86_64_MAIN/etc/profile.d/conda.sh
 conda activate rag_gpu
 
+python -c "import torch, sentence_transformers, faiss, numpy, ollama, pandas, rouge_score, bert_score" \
+    || { echo "rag_gpu env is missing online dependencies - run run_rag_env.job"; exit 1; }
+
 echo "===== SLURM ENV ====="
 echo "Job ID             : $SLURM_JOB_ID"
 echo "Node               : $SLURMD_NODENAME"
 echo "CUDA_VISIBLE_DEVICES: $CUDA_VISIBLE_DEVICES"
-echo "DB path            : $DB_PATH"
+echo "DB path            : $PWD/$DB_PATH"
 echo "Started at         : $(date +%Y-%m-%dT%H:%M:%S)"
 
 # --- Start Ollama server ---
 echo ""
 echo "===== STARTING OLLAMA ====="
-ollama serve > /dev/null 2>&1 &
+mkdir -p results
+
+OLLAMA_LOG="results/ollama_${SLURM_JOB_ID}.log"
+ollama serve > "$OLLAMA_LOG" 2>&1 &
 OLLAMA_PID=$!
+echo "Ollama log         : $PWD/$OLLAMA_LOG"
+
+# Always reap the server, including on an early exit from `set -e` below —
+# otherwise a failure between here and the cleanup section leaves it running.
+cleanup() {
+    if kill -0 "$OLLAMA_PID" 2>/dev/null; then
+        echo "Stopping Ollama (PID: $OLLAMA_PID)..."
+        kill "$OLLAMA_PID" 2>/dev/null || true
+        wait "$OLLAMA_PID" 2>/dev/null || true
+    fi
+}
+trap cleanup EXIT
+
+# Print what the server said, so a failure is diagnosable from the job's own log.
+die() {
+    echo "$1" >&2
+    echo "----- last 40 lines of $OLLAMA_LOG -----" >&2
+    tail -n 40 "$OLLAMA_LOG" >&2 || true
+    exit 1
+}
 
 OLLAMA_RETRIES=0
 until curl -s http://localhost:11434 > /dev/null; do
     sleep 1
     OLLAMA_RETRIES=$((OLLAMA_RETRIES + 1))
     if [[ $OLLAMA_RETRIES -ge 120 ]]; then
-        echo "Ollama failed to start after 120s — aborting"
-        exit 1
+        die "Ollama failed to start after 120s — aborting"
     fi
 done
 echo "Ollama PID: $OLLAMA_PID"
 
-echo "Warming up llama model..."
-ollama pull llama3.2
-ollama run llama3.2 "hi" > /dev/null 2>&1
+# Read the model from the same config the eval will use. Hard-coding it here is
+# how a job ends up pulling one model and evaluating with another.
+GEN_MODEL=$(python -m rag_pipeline.config "$CONFIG" --get online.generator.model "${OVERRIDES[@]}") \
+    || die "Could not read online.generator.model from $CONFIG"
+
+echo "Warming up model: $GEN_MODEL"
+ollama pull "$GEN_MODEL" || die "ollama pull $GEN_MODEL failed — aborting before the eval"
+ollama run "$GEN_MODEL" "hi" > /dev/null 2>&1 \
+    || die "ollama run $GEN_MODEL warm-up failed — model pulled but not usable"
 echo "Ollama ready."
 
 # --- Run online evaluation ---
 echo ""
 echo "===== RUNNING ONLINE EVALUATION ====="
-cd RAGNAR
+echo "Config             : $CONFIG"
+echo "Run name           : $RUN_NAME"
+echo "Overrides          : ${OVERRIDES[*]:-none}"
 ./monitor.sh results/hardware_online_${SLURM_JOB_ID}.csv \
-    python -m rag_pipeline.online_phase --db "$DB_PATH"
+    python -m rag_pipeline.online_phase \
+        --db "$DB_PATH" --config "$CONFIG" --name "$RUN_NAME" "${OVERRIDES[@]}"
 
 echo ""
 echo "===== DONE ====="
 echo "Finished at: $(date +%Y-%m-%dT%H:%M:%S)"
 
 # --- Cleanup ---
-echo "Stopping Ollama (PID: $OLLAMA_PID)..."
-kill $OLLAMA_PID
-wait $OLLAMA_PID 2>/dev/null
+cleanup
+trap - EXIT
 echo "Ollama stopped."

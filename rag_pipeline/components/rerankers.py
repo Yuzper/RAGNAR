@@ -1,3 +1,4 @@
+from dataclasses import replace
 from .base import BaseReranker, Chunk
 from sentence_transformers import CrossEncoder
 
@@ -26,9 +27,12 @@ class CrossEncoderReranker(BaseReranker):
             return []
         pairs = [(query, c.text) for c in chunks]
         scores = self.model.predict(pairs)
-        for chunk, score in zip(chunks, scores):
-            chunk.score = float(score)
-        ranked = sorted(chunks, key=lambda c: c.score, reverse=True)
+        # Re-score into copies rather than mutating the input. `chunks` is the
+        # caller's retrieved list — the same objects the trace holds — so writing
+        # .score in place would overwrite the dense retrieval scores with
+        # cross-encoder scores and leave no record of what the retriever thought.
+        ranked = [replace(c, score=float(s)) for c, s in zip(chunks, scores)]
+        ranked.sort(key=lambda c: c.score, reverse=True)
         return ranked[:top_k]
  
     def __repr__(self):

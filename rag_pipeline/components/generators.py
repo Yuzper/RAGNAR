@@ -12,6 +12,20 @@ _RETRY_BACKOFF  = [5, 15, 30, 60, 120]   # seconds to wait between attempts
 _OLLAMA_URL     = "http://localhost:11434"
 _OLLAMA_TIMEOUT = 30                      # seconds to wait for Ollama to recover
 
+# ── Context window ─────────────────────────────────────────────────
+# num_ctx is the total KV window — prompt and generated tokens share it. Ollama
+# defaults to 2048 and silently TRUNCATES an over-long prompt rather than
+# raising, which would drop retrieved passages before the model ever sees them
+# with no trace in the output. So it is always set explicitly, and every
+# response is checked against it.
+#
+# Sizing: ~453 chars/passage on the KILT corpus ≈ 113 tokens, so 10 passages is
+# ~1.2k tokens and 30 is ~3.5k. 8192 covers a reranker_top_k sweep to ~30 with
+# room for num_predict. KV cache for llama3.2-3B at 8192 is well under 1 GB —
+# irrelevant on an H100. Hold it CONSTANT across a sweep: changing num_ctx and
+# reranker_top_k together confounds the two.
+_DEFAULT_NUM_CTX = 8192
+
 
 def _wait_for_ollama(timeout: int = _OLLAMA_TIMEOUT) -> bool:
     """Poll Ollama's HTTP endpoint until it responds or timeout expires."""
@@ -44,12 +58,21 @@ class OllamaGenerator(BaseGenerator):
         temperature: float = 0.0,
         num_predict: int   = 512,        # max tokens to generate per response
         keep_alive:  str   = "60m",      # keep model loaded between queries
+        num_ctx:     int   = _DEFAULT_NUM_CTX,  # total KV window (prompt + answer)
+        seed:        int   = 42,         # sampler seed, for a reproducible record
     ):
         self._client      = ollama
         self._model       = model
         self._temperature = temperature
         self._num_predict = num_predict
         self._keep_alive  = keep_alive
+        self._num_ctx     = num_ctx
+        self._seed        = seed
+
+    @property
+    def prompt_token_budget(self) -> int:
+        """Tokens the prompt may occupy before Ollama starts truncating it."""
+        return self._num_ctx - self._num_predict
 
     def generate_with_meta(self, query: str, chunks: list[Chunk]) -> tuple[str, dict]:
         prompt   = self.build_prompt(query, chunks)
@@ -65,6 +88,8 @@ class OllamaGenerator(BaseGenerator):
                     options    = {
                         "temperature": self._temperature,
                         "num_predict": self._num_predict,
+                        "num_ctx":     self._num_ctx,
+                        "seed":        self._seed,
                     },
                     keep_alive = self._keep_alive,
                     stream     = True,
@@ -86,11 +111,31 @@ class OllamaGenerator(BaseGenerator):
                 completion_tokens = final.eval_count        if final else None
                 eval_dur_ns       = final.eval_duration     if final else None
 
+                # prompt_eval_count is what Ollama ACTUALLY processed, so it is
+                # the only reliable truncation signal — an over-long prompt is
+                # silently trimmed and reported at its trimmed length. None when
+                # the response carried no stats.
+                context_overflow = None
+                if prompt_tokens is not None:
+                    context_overflow = prompt_tokens > self.prompt_token_budget
+                    if context_overflow:
+                        print(
+                            f"[OllamaGenerator] CONTEXT OVERFLOW — prompt_tokens="
+                            f"{prompt_tokens} exceeds the budget of "
+                            f"{self.prompt_token_budget} (num_ctx={self._num_ctx} "
+                            f"- num_predict={self._num_predict}). Retrieved passages "
+                            f"were dropped before the model saw them. Raise num_ctx "
+                            f"or lower reranker_top_k — results from this run are "
+                            f"not comparable to non-truncated ones.",
+                            flush=True,
+                        )
+
                 return answer, {
                     "prompt_tokens":     prompt_tokens,
                     "completion_tokens": completion_tokens,
                     "tokens_per_sec":    tokens_per_second(completion_tokens, eval_dur_ns),
                     "ttft_ms":           ttft_ms,
+                    "context_overflow":  context_overflow,
                 }
 
             except Exception as exc:
@@ -131,5 +176,6 @@ class OllamaGenerator(BaseGenerator):
     def __repr__(self):
         return (
             f"OllamaGenerator(model='{self._model}', temp={self._temperature}, "
-            f"num_predict={self._num_predict}, keep_alive='{self._keep_alive}')"
+            f"num_predict={self._num_predict}, num_ctx={self._num_ctx}, "
+            f"seed={self._seed}, keep_alive='{self._keep_alive}')"
         )

@@ -35,3 +35,15 @@ Online runs:
 Reranker, passthrough and cross-encoder
 
 
+
+# For me notes
+
+Find chunks that was deemed relevant for this question.
+Query those for a wrong generation. Inspect
+
+
+Semantic chunking vs word cut off.
+"While semantic is x times more expensive at one time cost, we see at online phase it is faster and more accurate...or whatever it shows."
+
+
+

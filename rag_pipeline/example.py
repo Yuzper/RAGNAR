@@ -1,82 +1,97 @@
-import datetime as dt
-from rag_pipeline.components.knowledgeLoader import WikipediaLoader
-from rag_pipeline.loadDatasetNQ import loadDatasetNQ
+"""
+Thin interactive demo — ask an existing index a few questions and see the
+stages fire.
+
+This is NOT an experiment entry point. It never builds an index and it defines
+no settings of its own: every value comes from the config file, exactly as in
+offline_phase.py / online_phase.py. Use it to eyeball whether a build behaves
+sensibly before committing a 24 h evaluation to it.
+
+    python -m rag_pipeline.example --db results/FAISSDB_12345.index
+    python -m rag_pipeline.example --db results/FAISSDB_12345.index \
+        --set online.nprobe=128 -q "who wrote hamlet" -q "when was google founded"
+
+To BUILD an index:      sbatch run_rag_offline.job
+To EVALUATE a pipeline: sbatch run_rag_online.job <index>
+"""
+import argparse
+
 from rag_pipeline.pipeline import RAGPipeline
-from rag_pipeline.components.chunker import BasicChunker, PreChunkedChunker
+from rag_pipeline.components.chunker import build_chunker
 from rag_pipeline.components.embedders import SentenceTransformerEmbedder
 from rag_pipeline.components.databases import FAISSDB
 from rag_pipeline.components.retrievers import DenseRetriever
 from rag_pipeline.components.rerankers import CrossEncoderReranker, PassthroughReranker
 from rag_pipeline.components.generators import OllamaGenerator
-from rag_pipeline.evaluate import EvalDataset, EvalSample, PipelineEvaluator, compare_reports
-import os
+from rag_pipeline.config import ConfigError, RunConfig, add_config_args, compare_fingerprints
 
-job_id = os.environ.get("SLURM_JOB_ID") or dt.datetime.now().strftime("%Y%m%d_%H%M%S")
-# ──────────────────── Components for Pipeline ────────────────────
-# Shared components
-data_path           = "data/wikiDump/psgs_w100.tsv"
-#data_path           = "data/wikiDump/wiki_1M_clean.tsv"
-#data_path           = "data/wikiDump/psgs_sample_500.tsv"
-chunker             = PreChunkedChunker()
-embedder            = SentenceTransformerEmbedder("all-MiniLM-L6-v2")
-vector_db = FAISSDB(
-    dimension  = embedder.dimension,
-    metric     = "cosine",
-    use_gpu    = True,
-    index_type = "ivf_pq",
-    nprobe     = 64, # a non hardware performance knob, related to ivf_pq use vector_db.set_nprobe(128) to adjust it after training.
-    m_pq       = 96, # related to ivf_pq.
-    nbits_pq   = 8, # Standard is 8, lower gives smaller index and faster search but worse recall. Only relevant if m_pq > 0.
+DEFAULT_QUESTIONS = [
+    "when was google founded",
+    "who wrote the play hamlet",
+    "what is the capital of australia",
+]
+
+parser = argparse.ArgumentParser(description="Ask an existing index a few questions.")
+parser.add_argument("--db", required=True, help="Path to a saved index, e.g. results/FAISSDB_12345.index")
+parser.add_argument("-q", "--question", action="append", dest="questions",
+                    help="Question to ask (repeatable). Defaults to a built-in handful.")
+add_config_args(parser)
+args = parser.parse_args()
+
+try:
+    cfg = RunConfig.load(args.config, args.overrides)
+except ConfigError as exc:
+    raise SystemExit(f"[config] {exc}")
+
+vector_db = FAISSDB.load(args.db)
+
+# Same drift guard as the online phase — a demo run against the wrong index
+# would look perfectly plausible and teach you the wrong thing.
+diffs = compare_fingerprints(vector_db.build_config, cfg.index_fingerprint())
+if diffs:
+    raise SystemExit(
+        "Index/config mismatch — this index was not built from this configuration:\n  "
+        + "\n  ".join(diffs)
+    )
+
+vector_db.set_nprobe(cfg.get("online.nprobe"))
+
+reranker_type = cfg.get("online.reranker.type")
+embedder = SentenceTransformerEmbedder(cfg.get("embedder.model"))
+pipeline = RAGPipeline(
+    # Nothing is chunked at query time; built so the pipeline reports the
+    # chunker the index was made with. The fingerprint check above has already
+    # refused a config whose chunker disagrees with the build.
+    chunker   = build_chunker(cfg, embedder),
+    embedder  = embedder,
+    DataBase  = vector_db,
+    retriever = DenseRetriever(vector_db, retriever_top_k=cfg.get("online.retriever.top_k")),
+    reranker  = (
+        CrossEncoderReranker(cfg.get("online.reranker.model"),
+                             reranker_top_k=cfg.get("online.reranker.top_k"))
+        if reranker_type == "cross_encoder"
+        else PassthroughReranker(reranker_top_k=cfg.get("online.reranker.top_k"))
+    ),
+    generator = OllamaGenerator(
+        cfg.get("online.generator.model"),
+        num_predict = cfg.get("online.generator.num_predict"),
+        num_ctx     = cfg.get("online.generator.num_ctx"),
+        seed        = cfg.get("online.generator.seed"),
+    ),
+    skip_generation = cfg.get("online.eval.skip_generation"),
 )
 
-# Choose dataset to load, it chunks, embeds and indexes in batches.
-knowledgeBaseLoader = WikipediaLoader(db=vector_db, embedder=embedder, chunker=chunker)
+print(cfg.describe())
+print(f"  db_path : {args.db}")
 
-# Components for after database is built
-retriever   = DenseRetriever(vector_db, retriever_top_k=30)
-reranker    = CrossEncoderReranker("cross-encoder/ms-marco-MiniLM-L-6-v2", reranker_top_k=10)
-generator   = OllamaGenerator("llama3.2")
-
-# ──────────────────── Offline stage ────────────────────
-# Offline stage. Only run once.
-print("Loading and indexing data...")
-vector_db = knowledgeBaseLoader.load_and_index(
-    data_path,
-    embed_batch_size=256,
-    file_chunk_size=5_000,
-    output_path=f"results/offline_{vector_db.__type__()}_{job_id}.json",
-)
-
-vector_db.save(f"results/{vector_db.__type__()}_{job_id}.index")
-
-print("="*50)
-print("Data loaded and indexed.")
-# ──────────────────── Online stage ────────────────────
-# Pipelines to compare uses all same components exept what is swapped here.
-pipeline_1 = RAGPipeline(chunker=chunker,
-                        embedder=embedder,
-                        DataBase=vector_db,
-                        retriever=retriever,
-                        reranker=reranker,
-                        generator=generator,
-                        )
-
-pipeline_2 = RAGPipeline(chunker=chunker,
-                        embedder=embedder,
-                        DataBase=vector_db,
-                        retriever=retriever,
-                        reranker=PassthroughReranker(reranker_top_k=10),
-                        generator=generator
-                        )
-
-dataset = loadDatasetNQ("data/NQ/Natural-Questions-Filtered.csv")
-
-pipeline_setup_1  = PipelineEvaluator(pipeline_1).run(dataset,  f"results/pipeline_1_{job_id}.json")
-print("Pipeline 1 evaluation complete.")
-pipeline_setup_2  = PipelineEvaluator(pipeline_2).run(dataset,  f"results/pipeline_2_{job_id}.json")
-print("Pipeline 2 evaluation complete.")
-
-print(compare_reports({
-    "pipeline_1":  pipeline_setup_1,
-    "pipeline_2":  pipeline_setup_2
-}))
+for question in (args.questions or DEFAULT_QUESTIONS):
+    run = pipeline.query(question, trace=True, capture_errors=True)
+    print("─" * 60)
+    print(f"Q: {question}")
+    if not run.ok:
+        print(f"   FAILED at {run.failed_stage}: {run.error}")
+        continue
+    print(f"A: {run.answer}")
+    print("   " + "  ".join(f"{s}={run.latency_ms[s]:.0f}ms" for s in run.latency_ms))
+    for i, chunk in enumerate(run.reranked_chunks[:3], 1):
+        print(f"   [{i}] {chunk.text[:110]}...")

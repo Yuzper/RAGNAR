@@ -74,6 +74,8 @@ class OfflineBuildTrace:
     chunk_size_max: int
     embed_ms:       float          # total embedding time in ms
     index_ms:       float          # total indexing time in ms
+    # The build runs start to finish in one pass with no checkpointing, so this
+    # is uncontaminated build cost — safe to report as-is.
     total_ms:       float          # wall-clock total in ms
     chunks_per_sec: float          # embedding throughput
     batches:        list[BatchTrace] = field(default_factory=list)
@@ -106,6 +108,25 @@ class RunTrace:
     wall_time:  dict[str, str]   = field(default_factory=dict)  # ISO timestamps per stage
     stage_meta: dict[str, dict]  = field(default_factory=dict)
     warnings:   list[str]        = field(default_factory=list)
+    # Set when query(capture_errors=True) swallowed an exception. The stages
+    # before failed_stage still hold valid measurements; everything from
+    # failed_stage on is absent, not zero.
+    failed_stage: str | None = None
+    error:        str | None = None
+
+    @property
+    def ok(self) -> bool:
+        return self.failed_stage is None
+
+    def completed(self, stage: str) -> bool:
+        """
+        True when `stage` ran to completion. Latency is only recorded after a
+        stage returns, so its presence is the completion marker — which is why
+        metrics must read latency_ms[stage] rather than .get(stage, 0.0): a
+        missing stage is an absent sample, and folding it in as 0 ms would pull
+        every average down towards a stage that never ran.
+        """
+        return stage in self.latency_ms
 
     def summary(self) -> str:
         lines = [
@@ -116,6 +137,8 @@ class RunTrace:
             f"Wall time : {self.wall_time}",
             f"Answer    : {self.answer[:200]}{'...' if len(self.answer) > 200 else ''}",
         ]
+        if not self.ok:
+            lines.append(f"FAILED at : {self.failed_stage} — {self.error}")
         return "\n".join(lines)
 
 
@@ -127,7 +150,8 @@ class RAGPipeline:
         DataBase:  BaseVectorDataBase,
         retriever: BaseRetriever,
         reranker:  BaseReranker,
-        generator: BaseGenerator
+        generator: BaseGenerator,
+        skip_generation: bool = False,
     ):
         self.chunker   = chunker
         self.embedder  = embedder
@@ -135,64 +159,114 @@ class RAGPipeline:
         self.retriever = retriever
         self.reranker  = reranker
         self.generator = generator
+        # Stop after reranking. Lets the retrieval half be smoke-tested without a
+        # running Ollama server, and without paying generation's wall-clock. The
+        # generate stage is left unrecorded rather than recorded as empty, so the
+        # evaluators report its metrics as n/a instead of scoring "" as a wrong
+        # answer for every query.
+        self.skip_generation = skip_generation
 
     # ── Querying ───────────────────────────────────────────────────────
-    def query(self, question: str, trace: bool = False) -> GenerationResult | RunTrace:
+    def query(
+        self, question: str, trace: bool = False, capture_errors: bool = False,
+    ) -> GenerationResult | RunTrace:
+        """
+        Run one query end to end.
+
+        capture_errors (trace mode only) turns a raised exception into a partial
+        RunTrace instead of propagating it, so a single malformed query or a
+        transient generator failure cannot abort a batch evaluation. The stages
+        that already completed keep their measurements; failed_stage names where
+        it stopped. Without trace=True there is nothing to return a failure in,
+        so the exception propagates regardless.
+        """
         run = RunTrace(query=question)
         run.wall_time["pipeline_start"] = datetime.now().isoformat(timespec="milliseconds")
+        stage = "embed"
 
-        # 1. Embed query
-        run.wall_time["embed_start"] = datetime.now().isoformat(timespec="milliseconds")
-        t0 = time.time()
-        q_embedding = self.embedder.embed_one(question)
-        run.latency_ms["embed"] = (time.time() - t0) * 1000
-        run.wall_time["embed_end"] = datetime.now().isoformat(timespec="milliseconds")
-        run.stage_meta["embed"] = {"embedding_dim": len(q_embedding)}
+        try:
+            # 1. Embed query
+            run.wall_time["embed_start"] = datetime.now().isoformat(timespec="milliseconds")
+            t0 = time.time()
+            q_embedding = self.embedder.embed_one(question)
+            run.latency_ms["embed"] = (time.time() - t0) * 1000
+            run.wall_time["embed_end"] = datetime.now().isoformat(timespec="milliseconds")
+            run.stage_meta["embed"] = {"embedding_dim": len(q_embedding)}
 
-        # 2. Retrieve
-        run.wall_time["retrieve_start"] = datetime.now().isoformat(timespec="milliseconds")
-        t0 = time.time()
-        retrieved = self.retriever.retrieve(
-            query=question,
-            query_embedding=q_embedding,
-            top_k=self.retriever.retriever_top_k,
-        )
-        run.latency_ms["retrieve"] = (time.time() - t0) * 1000
-        run.wall_time["retrieve_end"] = datetime.now().isoformat(timespec="milliseconds")
-        run.retrieved_chunks = retrieved
-        run.stage_meta["retrieve"] = {
-            "retriever":       str(self.retriever.__class__.__name__),
-            "top_k_requested": self.retriever.retriever_top_k,
-            "top_k_returned":  len(retrieved),
-        }
+            # 2. Retrieve
+            stage = "retrieve"
+            run.wall_time["retrieve_start"] = datetime.now().isoformat(timespec="milliseconds")
+            t0 = time.time()
+            retrieved = self.retriever.retrieve(
+                query=question,
+                query_embedding=q_embedding,
+                top_k=self.retriever.retriever_top_k,
+            )
+            run.latency_ms["retrieve"] = (time.time() - t0) * 1000
+            run.wall_time["retrieve_end"] = datetime.now().isoformat(timespec="milliseconds")
+            run.retrieved_chunks = retrieved
+            run.stage_meta["retrieve"] = {
+                "retriever":       str(self.retriever.__class__.__name__),
+                "top_k_requested": self.retriever.retriever_top_k,
+                "top_k_returned":  len(retrieved),
+            }
 
-        # 3. Rerank
-        run.wall_time["rerank_start"] = datetime.now().isoformat(timespec="milliseconds")
-        t0 = time.time()
-        reranked = self.reranker.rerank(question, retrieved, top_k=self.reranker.reranker_top_k)
-        run.latency_ms["rerank"] = (time.time() - t0) * 1000
-        run.wall_time["rerank_end"] = datetime.now().isoformat(timespec="milliseconds")
-        run.reranked_chunks = reranked
-        run.stage_meta["rerank"] = {
-            "top_k_requested": self.reranker.reranker_top_k,
-            "top_k_returned":  len(reranked),
-        }
+            # 3. Rerank
+            stage = "rerank"
+            run.wall_time["rerank_start"] = datetime.now().isoformat(timespec="milliseconds")
+            t0 = time.time()
+            reranked = self.reranker.rerank(question, retrieved, top_k=self.reranker.reranker_top_k)
+            run.latency_ms["rerank"] = (time.time() - t0) * 1000
+            run.wall_time["rerank_end"] = datetime.now().isoformat(timespec="milliseconds")
+            run.reranked_chunks = reranked
+            run.stage_meta["rerank"] = {
+                "top_k_requested": self.reranker.reranker_top_k,
+                "top_k_returned":  len(reranked),
+            }
 
-        # 4. Generate
-        run.wall_time["generate_start"] = datetime.now().isoformat(timespec="milliseconds")
-        t0 = time.time()
-        answer, gen_meta = self.generator.generate_with_meta(question, reranked)
-        run.latency_ms["generate"] = (time.time() - t0) * 1000
-        run.wall_time["generate_end"] = datetime.now().isoformat(timespec="milliseconds")
-        run.answer = answer
-        run.stage_meta["generate"] = {
-            "context_chunks":    len(reranked),
-            "answer_chars":      len(answer),
-            "prompt_tokens":     gen_meta.get("prompt_tokens"),
-            "completion_tokens": gen_meta.get("completion_tokens"),
-            "tokens_per_sec":    gen_meta.get("tokens_per_sec"),
-            "ttft_ms":           gen_meta.get("ttft_ms"),
-        }
+            # 4. Generate
+            if self.skip_generation:
+                run.warnings.append("generation skipped (skip_generation=True)")
+                run.wall_time["pipeline_end"] = datetime.now().isoformat(timespec="milliseconds")
+                if trace:
+                    return run
+                return GenerationResult(
+                    answer="", chunks_used=reranked, query=question,
+                    metadata={"latency_ms": run.latency_ms, "skipped_generation": True},
+                )
+
+            stage = "generate"
+            run.wall_time["generate_start"] = datetime.now().isoformat(timespec="milliseconds")
+            t0 = time.time()
+            answer, gen_meta = self.generator.generate_with_meta(question, reranked)
+            run.latency_ms["generate"] = (time.time() - t0) * 1000
+            run.wall_time["generate_end"] = datetime.now().isoformat(timespec="milliseconds")
+            run.answer = answer
+            run.stage_meta["generate"] = {
+                "context_chunks":    len(reranked),
+                "answer_chars":      len(answer),
+                "prompt_tokens":     gen_meta.get("prompt_tokens"),
+                "completion_tokens": gen_meta.get("completion_tokens"),
+                "tokens_per_sec":    gen_meta.get("tokens_per_sec"),
+                "ttft_ms":           gen_meta.get("ttft_ms"),
+                "context_overflow":  gen_meta.get("context_overflow"),
+            }
+            if gen_meta.get("context_overflow"):
+                run.warnings.append(
+                    f"context truncated: prompt_tokens={gen_meta.get('prompt_tokens')} "
+                    f"exceeded the context window; some retrieved chunks were dropped"
+                )
+        except Exception as exc:
+            if not (trace and capture_errors):
+                raise
+            # KeyboardInterrupt/SystemExit are BaseExceptions and pass through —
+            # a cancelled job should still die immediately.
+            run.failed_stage = stage
+            run.error = f"{type(exc).__name__}: {exc}"
+            run.warnings.append(f"{stage} failed: {run.error}")
+            run.wall_time[f"{stage}_failed"] = datetime.now().isoformat(timespec="milliseconds")
+            run.wall_time["pipeline_end"] = datetime.now().isoformat(timespec="milliseconds")
+            return run
 
         run.wall_time["pipeline_end"] = datetime.now().isoformat(timespec="milliseconds")
 
@@ -214,7 +288,8 @@ class RAGPipeline:
             f"  Store     : {self.DB}",
             f"  Retriever : {self.retriever}",
             f"  Reranker  : {self.reranker}",
-            f"  Generator : {self.generator}",
+            f"  Generator : {self.generator}"
+            + ("  [SKIPPED — retrieval-only run]" if self.skip_generation else ""),
             f"retriever_top_k={self.retriever.retriever_top_k}",
             f"reranker_top_k={self.reranker.reranker_top_k}",
         ]

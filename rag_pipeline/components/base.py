@@ -2,12 +2,27 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any
 
+import numpy as np
 
-@dataclass
+
+@dataclass(slots=True)
 class Chunk:
-    """A single retrieved text chunk with metadata."""
+    """
+    A single retrieved text chunk with metadata.
+
+    slots=True because FAISSDB holds one of these per corpus passage — tens of
+    millions of them, live for the whole offline build. Dropping the per-instance
+    __dict__ saves ~100 bytes each, which is gigabytes at corpus scale.
+
+    metadata defaults to None rather than {}: an empty dict from default_factory
+    would still allocate ~64 bytes per instance. During the build the offline
+    loader uses it to carry the article title to the embedder and then clears it,
+    so stored chunks normally have metadata=None. Read it as `chunk.metadata or {}`.
+    Use chunk_id to join back to the source TSV for anything the metadata used to
+    hold (wikipedia_id, end_paragraph, end_character).
+    """
     text: str
-    metadata: dict = field(default_factory=dict)
+    metadata: dict | None = None
     score: float = 0.0
     chunk_id: str = ""
 
@@ -43,11 +58,11 @@ class GenerationResult:
 
 class BaseVectorDataBase(ABC):
     @abstractmethod
-    def add(self, chunks: list[Chunk], embeddings: list[list[float]]) -> None:
+    def add(self, chunks: list[Chunk], embeddings: np.ndarray) -> None:
         """Add chunks and their embeddings to the DB."""
 
     @abstractmethod
-    def search(self, query_embedding: list[float], top_k: int) -> list[Chunk]:
+    def search(self, query_embedding: np.ndarray, top_k: int) -> list[Chunk]:
         """
         Dense vector search. Returns top_k chunks ordered by similarity.
         Called by DenseRetriever and HybridRetriever.
@@ -84,11 +99,20 @@ class BaseEmbedder(ABC):
     """Encodes text into dense vectors."""
 
     @abstractmethod
-    def embed(self, texts: list[str]) -> list[list[float]]:
-        """Embed a list of texts. Returns a list of float vectors."""
+    def embed(self, texts: list[str]) -> tuple[np.ndarray, list[int]]:
+        """
+        Embed a list of texts.
 
-    def embed_one(self, text: str) -> list[float]:
+        Returns (embeddings, skipped_indices): a float32 (n, dim) array, and the
+        positions in `texts` that were dropped. Implementations must return an
+        array — never a list of lists — and must keep the shape 2-D even when
+        every text was skipped, so consumers can feed it straight to FAISS.
+        """
+
+    def embed_one(self, text: str) -> np.ndarray:
         embeddings, _ = self.embed([text])
+        if len(embeddings) == 0:
+            raise ValueError(f"Embedder skipped the only text given to embed_one: {text!r}")
         return embeddings[0]
 
     @property
@@ -107,7 +131,7 @@ class BaseRetriever(ABC):
         self.retriever_top_k = retriever_top_k
 
     @abstractmethod
-    def retrieve(self, query: str, query_embedding: list[float], top_k: int) -> list[Chunk]:
+    def retrieve(self, query: str, query_embedding: np.ndarray, top_k: int) -> list[Chunk]:
         """
         Return top_k chunks for the given query.
 
@@ -145,6 +169,9 @@ class BaseGenerator(ABC):
           completion_tokens - number of tokens generated
           tokens_per_sec    - generation throughput
           ttft_ms           - time-to-first-token in milliseconds
+          context_overflow  - True if the prompt was truncated to fit the
+                              context window, meaning the model answered from
+                              fewer chunks than it was given
 
         Default implementation calls generate() with no token tracking.
         Override in subclasses that have access to this information
@@ -155,6 +182,7 @@ class BaseGenerator(ABC):
             "completion_tokens": None,
             "tokens_per_sec":    None,
             "ttft_ms":           None,
+            "context_overflow":  None,
         }
 
     def build_prompt(self, query: str, chunks: list[Chunk]) -> str:

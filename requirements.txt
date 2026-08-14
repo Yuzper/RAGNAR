@@ -1,8 +1,18 @@
+# --- Needed by both phases
 sentence-transformers>=2.7
+transformers
+torch
+numpy
+PyYAML>=6.0
+
+# HPC (the rag_gpu conda env) installs faiss-gpu-cu12 — that GPU build is what
+# produced the reported results. faiss-cpu is the local/dev fallback only.
 faiss-cpu>=1.8
-ollama>=0.2
 chromadb>=0.3
+
+# --- Online phase only
+ollama>=0.2
+pandas
 rouge_score
 bert_score
-numpy
-pandas
+

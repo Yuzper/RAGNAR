@@ -1,5 +1,6 @@
 import os
 import pickle
+from dataclasses import replace
 import numpy as np
 from .base import BaseVectorDataBase, Chunk
 import faiss
@@ -43,6 +44,7 @@ class FAISSDB(BaseVectorDataBase):
         nbits_pq:   int  = 8,            # IVF_PQ: bits per subquantizer
         train_size: int  = 262_144,      # IVF: vectors to buffer before auto-training
         embedder_name: str | None = None, # model that produced the vectors (persisted for query-time validation)
+        build_config: dict | None = None, # index-defining config, persisted for query-time validation
     ):
         _VALID = {"flat", "ivf_flat", "ivf_pq", "ivf_sq"}
         if index_type not in _VALID:
@@ -64,6 +66,9 @@ class FAISSDB(BaseVectorDataBase):
         self.nbits_pq   = nbits_pq
         self.train_size = train_size
         self.embedder_name = embedder_name
+        # Set by the offline phase from RunConfig.index_fingerprint() and
+        # persisted with the index; the online phase refuses a mismatch.
+        self.build_config = build_config
 
         self._chunks: list[Chunk] = []
 
@@ -75,6 +80,14 @@ class FAISSDB(BaseVectorDataBase):
         # Tracks whether self._index is currently on GPU.
         # Set authoritatively inside _to_gpu so every code path agrees.
         self._is_on_gpu: bool = False
+
+        # GPU resources (temp memory + streams) backing a GPU index.
+        # index_cpu_to_gpu does NOT take ownership of this object, so it must
+        # outlive every index built from it. Held on the instance and created
+        # lazily in _to_gpu; a local would be garbage-collected on return,
+        # leaving the live index pointing at freed device memory — a segfault
+        # that lands hours into a build with no resume path.
+        self._gpu_res = None
 
         # Flat indexes are ready immediately; IVF starts as untrained CPU index
         cpu_index   = self._build_cpu_index()
@@ -102,11 +115,21 @@ class FAISSDB(BaseVectorDataBase):
         if self.index_type == "ivf_flat":
             return faiss.IndexIVFFlat(quantizer, self.dimension, self.nlist, metric_flag)
         if self.index_type == "ivf_pq":
+            # metric_flag MUST be passed explicitly: IndexIVFPQ's metric argument
+            # defaults to METRIC_L2, so omitting it built an L2 index sitting on
+            # top of an inner-product coarse quantizer. For normalised ("cosine")
+            # vectors the two rank identically, so the retrieved order survived —
+            # but search() then received L2 distances and rescaled them as if they
+            # were inner products, making every chunk.score meaningless. Under
+            # metric="dot" (un-normalised vectors) the rankings genuinely diverge
+            # and retrieval itself would have been wrong.
             return faiss.IndexIVFPQ(
-                quantizer, self.dimension, self.nlist, self.m_pq, self.nbits_pq
+                quantizer, self.dimension, self.nlist, self.m_pq, self.nbits_pq,
+                metric_flag,
             )
         if self.index_type == "ivf_sq":
-            return faiss.IndexIVFSQ(
+            # faiss.IndexIVFSQ does not exist — the class is IndexIVFScalarQuantizer.
+            return faiss.IndexIVFScalarQuantizer(
                 quantizer, self.dimension, self.nlist,
                 faiss.ScalarQuantizer.QT_8bit, metric_flag,
             )
@@ -129,8 +152,12 @@ class FAISSDB(BaseVectorDataBase):
             self._is_on_gpu = False
             return cpu_index
         try:
-            res       = self._faiss.StandardGpuResources()
-            gpu_index = self._faiss.index_cpu_to_gpu(res, 0, cpu_index)
+            # Reuse one resources object for the lifetime of the DB: it is
+            # allocated once, kept alive by self, and shared by the training
+            # index and any later reload.
+            if self._gpu_res is None:
+                self._gpu_res = self._faiss.StandardGpuResources()
+            gpu_index = self._faiss.index_cpu_to_gpu(self._gpu_res, 0, cpu_index)
             print(f"[FAISSDB] Index moved to GPU 0 ({ngpu} GPU(s) available)")
             self._is_on_gpu = True
             return gpu_index
@@ -150,30 +177,75 @@ class FAISSDB(BaseVectorDataBase):
             return self._faiss.index_gpu_to_cpu(self._index)
         return self._index
 
-    def _set_nprobe(self, index: faiss.Index) -> None:
+    def _read_nprobe(self, index: faiss.Index) -> int | None:
         """
-        Apply self.nprobe to the *live* IVF index (CPU or GPU).
+        Read nprobe back off a live index, or None if this variant does not
+        expose it. None means "unverifiable" — never "wrong".
+        """
+        try:
+            return int(index.nprobe)
+        except Exception:
+            return None
+
+    def _set_nprobe(self, index: faiss.Index, *, strict: bool = True) -> None:
+        """
+        Apply self.nprobe to the *live* IVF index (CPU or GPU), then verify it
+        actually landed.
 
         The earlier implementation converted a GPU index to CPU and wrote
         nprobe on the throwaway copy, so the setting never reached the GPU
         index and searches silently ran at the FAISS default (nprobe=1),
         crippling recall. GPU indexes must be tuned via GpuParameterSpace
         (or a direct attribute write) on the live object.
+
+        Both write paths then swallowed their exception, which reintroduced the
+        same failure one level down: the index searches at nprobe=1 while the
+        report, the config provenance and the trace _meta.json all record the
+        requested value — a wrong recall number that looks completely healthy.
+        nprobe is deliberately NOT part of the index fingerprint (it is the
+        sweep axis), so nothing else would catch it. Hence the read-back.
+
+        strict=False is used during the offline build only: nprobe has no effect
+        until query time there, and killing a build with no recovery path over a
+        query-time knob costs far more than the warning.
         """
         if self.index_type == "flat":
             return
+
+        attempts: list[str] = []
         if self._is_on_gpu:
             try:
                 self._faiss.GpuParameterSpace().set_index_parameter(
                     index, "nprobe", self.nprobe
                 )
-                return
-            except Exception:
-                pass  # fall through to direct attribute write
-        try:
-            index.nprobe = self.nprobe
-        except Exception:
-            pass  # unsupported index variant — silently skip
+            except Exception as exc:
+                attempts.append(f"GpuParameterSpace: {exc}")
+
+        # CPU indexes, and GPU indexes whose parameter-space write did not take.
+        if self._read_nprobe(index) != self.nprobe:
+            try:
+                index.nprobe = self.nprobe
+            except Exception as exc:
+                attempts.append(f"attribute write: {exc}")
+
+        actual = self._read_nprobe(index)
+        if actual == self.nprobe:
+            return
+
+        detail = "; ".join(attempts) or "no write path raised"
+        if actual is None:
+            print(f"[FAISSDB] Warning: nprobe={self.nprobe} was written but this index "
+                  f"variant does not expose nprobe for read-back, so it could not be "
+                  f"verified ({detail}). Treat this run's recall as unconfirmed at "
+                  f"nprobe={self.nprobe}.")
+            return
+
+        msg = (f"nprobe was NOT applied: requested {self.nprobe}, index reports {actual}. "
+               f"Every recall number from this index would be measured at nprobe={actual} "
+               f"while the report and trace metadata record {self.nprobe} ({detail}).")
+        if strict:
+            raise RuntimeError(f"[FAISSDB] {msg}")
+        print(f"[FAISSDB] Warning: {msg}")
 
     # ── Training (IVF only) ────────────────────────────────────────────────────
 
@@ -215,7 +287,10 @@ class FAISSDB(BaseVectorDataBase):
 
         self._trained = True
         self._index   = self._to_gpu(cpu_index)
-        self._set_nprobe(self._index)
+        # Non-strict: this is the offline build, which never searches. A failed
+        # nprobe write here must not kill a build that cannot be resumed — the
+        # online phase sets it again on load and fails loud there.
+        self._set_nprobe(self._index, strict=False)
 
     def _auto_train_if_ready(self) -> None:
         """Trigger training once the buffer crosses train_size."""
@@ -237,7 +312,28 @@ class FAISSDB(BaseVectorDataBase):
             )
         self.train(np.vstack(self._buf_vecs))
 
-    def add(self, chunks: list[Chunk], embeddings: list[list[float]]) -> None:
+    def add(self, chunks: list[Chunk], embeddings: np.ndarray) -> None:
+        # search() maps FAISS ids back to self._chunks by position, so chunks and
+        # embeddings must correspond 1:1. Any drift here would silently return the
+        # wrong passage for every id after the offset — undetectable downstream.
+        if len(embeddings) != len(chunks):
+            raise ValueError(
+                f"[FAISSDB] add() got {len(chunks):,} chunks but {len(embeddings):,} "
+                f"embeddings. They must correspond 1:1 — drop the skipped chunks "
+                f"before calling add()."
+            )
+        # A batch arrives empty when the embedder skipped every text in it.
+        # Nothing to add, and an empty array must not reach the training buffer:
+        # a stray shape-(0,) entry would surface much later as a vstack failure
+        # in train(). Note len(), not truthiness — embeddings is an ndarray.
+        if len(embeddings) == 0:
+            return
+
+        # Deliberate copy: normalize_L2 rewrites its argument in place, and the
+        # caller still holds this array — the loader's norm statistics read the
+        # same buffer. They happen to run before this call today, so aliasing
+        # would not corrupt them yet; one vectorised copy per batch keeps that
+        # from silently becoming a reordering bug.
         vecs = np.array(embeddings, dtype=np.float32)
         if self.metric == "cosine":
             self._faiss.normalize_L2(vecs)
@@ -251,7 +347,7 @@ class FAISSDB(BaseVectorDataBase):
             self._buf_chunks.extend(chunks)
             self._auto_train_if_ready()
 
-    def search(self, query_embedding: list[float], top_k: int) -> list[Chunk]:
+    def search(self, query_embedding: np.ndarray, top_k: int) -> list[Chunk]:
         if not self._chunks:
             return []
         if not self._trained:
@@ -270,12 +366,17 @@ class FAISSDB(BaseVectorDataBase):
                 continue
             chunk = self._chunks[idx]
             if self.metric == "cosine":
-                chunk.score = (float(score) + 1.0) / 2.0      # cosine IP → [0, 1]
+                value = (float(score) + 1.0) / 2.0            # cosine IP → [0, 1]
             elif self.metric == "dot":
-                chunk.score = float(score)                    # raw inner product
+                value = float(score)                          # raw inner product
             else:
-                chunk.score = 1.0 / (1.0 + float(score))      # L2 → similarity
-            results.append(chunk)
+                value = 1.0 / (1.0 + float(score))            # L2 → similarity
+            # Return a copy, never the stored object. self._chunks is the single
+            # canonical copy of all 35M chunks, so writing .score onto it would
+            # let every query overwrite the scores of every earlier query that
+            # retrieved the same chunk — silently, with plausible-looking values.
+            # text/metadata stay shared by reference, so this stays cheap.
+            results.append(replace(chunk, score=value))
         return results
 
     def save(self, path: str) -> None:
@@ -303,6 +404,10 @@ class FAISSDB(BaseVectorDataBase):
                     "nbits_pq":   self.nbits_pq,
                     "train_size": self.train_size,
                     "embedder_name": self.embedder_name,
+                    # The index-defining config this index was built from, so an
+                    # online run can prove it is querying what it thinks it is.
+                    # None for indexes saved before fingerprinting existed.
+                    "build_config": self.build_config,
                 },
                 f,
             )
@@ -329,6 +434,7 @@ class FAISSDB(BaseVectorDataBase):
             train_size = meta.get("train_size", 262_144),
             embedder_name = meta.get("embedder_name"),
         )
+        db.build_config = meta.get("build_config")
         cpu_index   = faiss.read_index(f"{path}.faiss")
         db._index   = db._to_gpu(cpu_index)   # sets db._is_on_gpu
         db._set_nprobe(db._index)
@@ -411,22 +517,23 @@ class ChromaDB(BaseVectorDataBase):
             for doc, meta, cid in zip(docs, metas, ids)
         ]
 
-    def add(self, chunks: list[Chunk], embeddings: list[list[float]]) -> None:
+    def add(self, chunks: list[Chunk], embeddings: np.ndarray) -> None:
         ids = [str(self._id_counter + i) for i in range(len(chunks))]
         self._collection.add(
             ids=ids,
-            embeddings=np.array(embeddings, dtype=np.float32).tolist(),
+            embeddings=np.asarray(embeddings, dtype=np.float32).tolist(),
             documents=[c.text for c in chunks],
-            metadatas=[c.metadata for c in chunks],
+            metadatas=[c.metadata or {} for c in chunks],  # Chunk.metadata may be None
         )
         self._id_counter += len(chunks)
         self._chunk_cache.extend(chunks)
 
-    def search(self, query_embedding: list[float], top_k: int) -> list[Chunk]:
+    def search(self, query_embedding: np.ndarray, top_k: int) -> list[Chunk]:
         if self._collection.count() == 0:
             return []
         results = self._collection.query(
-            query_embeddings=[query_embedding],
+            # Chroma's client expects plain lists, not ndarrays.
+            query_embeddings=[np.asarray(query_embedding, dtype=np.float32).tolist()],
             n_results=min(top_k, self._collection.count()),
         )
         documents = results.get("documents") or [[]]

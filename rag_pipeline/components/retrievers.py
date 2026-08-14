@@ -1,3 +1,5 @@
+import numpy as np
+
 from .base import BaseRetriever, BaseVectorDataBase, Chunk
 
 class DenseRetriever(BaseRetriever):
@@ -10,7 +12,7 @@ class DenseRetriever(BaseRetriever):
         super().__init__(retriever_top_k)
         self.db = db
 
-    def retrieve(self, query: str, query_embedding: list[float], top_k: int) -> list[Chunk]:
+    def retrieve(self, query: str, query_embedding: np.ndarray, top_k: int) -> list[Chunk]:
         return self.db.search(query_embedding, top_k)
 
     def __repr__(self):
