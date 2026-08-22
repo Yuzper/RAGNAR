@@ -5,7 +5,6 @@
 #SBATCH --cpus-per-task=1
 #SBATCH --mem=32G
 #SBATCH --nodes=1
-#SBATCH --nodelist=cn[19]
 #SBATCH --time=07:30:00
 #SBATCH --partition=scavenge
 #SBATCH --mail-type=end,fail

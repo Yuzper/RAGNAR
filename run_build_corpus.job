@@ -1,0 +1,53 @@
+#!/bin/bash
+#SBATCH --job-name=rag_corpus_%j
+#SBATCH --output=logs/rag_corpus_%j.out
+#SBATCH --error=logs/rag_corpus_%j.err
+#SBATCH --cpus-per-task=2
+#SBATCH --mem=16G
+#SBATCH --nodes=1
+#SBATCH --nodelist=cn11
+#SBATCH --time=02:00:00
+#SBATCH --partition=scavenge
+#SBATCH --mail-type=fail,end
+
+set -eo pipefail
+
+# Usage: sbatch run_build_corpus.job [input.tsv] [output.jsonl]
+INPUT="${1:-data/wikiDump/psgs_w100.tsv}"
+OUTPUT="${2:-data/wikiDump/articles.jsonl}"
+
+source ~/Miniconda3-py312_25.9.1-3-Linux-x86_64_MAIN/etc/profile.d/conda.sh
+conda activate rag_gpu
+export PYTHONUNBUFFERED=1
+
+echo "===== SLURM ENV ====="
+echo "Job ID     : $SLURM_JOB_ID"
+echo "Node       : $SLURMD_NODENAME"
+echo "Started at : $(date +%Y-%m-%dT%H:%M:%S)"
+
+cd RAGNAR || { echo "Cannot cd to RAGNAR from $PWD - aborting"; exit 1; }
+
+echo ""
+echo "===== BUILDING ARTICLE CORPUS ====="
+echo "Input  : $INPUT"
+echo "Output : $OUTPUT"
+
+# --verify samples the first 2000 articles rather than all 5.2M: the check
+# re-joins each article's passages and compares word sequences, which is far
+# more expensive per article than the reconstruction itself. A systematic
+# reconstruction fault shows up in the first 2000; a fault that only appears
+# later would also have to survive the seam-anomaly counter, which covers
+# every article.
+python -m rag_pipeline.build_article_corpus \
+    --input  "$INPUT" \
+    --output "$OUTPUT" \
+    --verify 2000
+
+# build_article_corpus returns 2 when verification failed or spurious spaces
+# were introduced. set -e already aborts here, but say why before it does.
+echo ""
+echo "===== DONE ====="
+ls -lh "$OUTPUT"
+echo "Finished at: $(date +%Y-%m-%dT%H:%M:%S)"
+echo ""
+echo "Next: sbatch run_rag_offline.job"

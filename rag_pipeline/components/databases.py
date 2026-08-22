@@ -292,6 +292,23 @@ class FAISSDB(BaseVectorDataBase):
         # online phase sets it again on load and fails loud there.
         self._set_nprobe(self._index, strict=False)
 
+    def train_on_sample(self, embeddings: np.ndarray) -> None:
+        """
+        Train from a sample drawn by the caller, instead of from whatever the
+        first `train_size` vectors of the stream happen to be.
+
+        Applies the same copy-and-normalise add() does. Skipping that would fit
+        the centroids to unnormalised vectors while the index stores normalised
+        ones — the partition would be wrong for every vector, and nothing
+        downstream would report it.
+        """
+        if self._trained:
+            return
+        vecs = np.array(embeddings, dtype=np.float32)
+        if self.metric == "cosine":
+            self._faiss.normalize_L2(vecs)
+        self.train(vecs)
+
     def _auto_train_if_ready(self) -> None:
         """Trigger training once the buffer crosses train_size."""
         total = sum(v.shape[0] for v in self._buf_vecs)

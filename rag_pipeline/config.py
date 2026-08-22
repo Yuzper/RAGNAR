@@ -42,6 +42,7 @@ INDEX_DEFINING_KEYS = (
     "index.m_pq",
     "index.nbits_pq",
     "index.train_size",
+    "index.train_seed",
     "offline.data_path",
     "offline.prepend_titles",
     # The chunker determines what a vector IS, so it belongs here as much as the
@@ -99,6 +100,14 @@ class RunConfig:
         cls, path: str | Path | None = None, overrides: list[str] | None = None,
     ) -> "RunConfig":
         path = Path(path) if path else DEFAULT_CONFIG_PATH
+        # A bare name resolves against configs/, so `--config Baseline` and
+        # `--config configs/Baseline.yaml` mean the same thing. Only bare names
+        # are rewritten - an explicit path that is wrong stays wrong, and is
+        # reported as given rather than silently pointing somewhere else.
+        if not path.exists() and path.parent == Path("."):
+            candidate = DEFAULT_CONFIG_PATH.parent / f"{path.stem}.yaml"
+            if candidate.exists():
+                path = candidate
         if not path.exists():
             raise ConfigError(f"Config file not found: {path}")
         with open(path, "r", encoding="utf-8") as f:
@@ -306,7 +315,8 @@ def add_config_args(parser) -> None:
     """Attach --config/--set to an argparse parser (shared by both phases)."""
     parser.add_argument(
         "--config", default=str(DEFAULT_CONFIG_PATH),
-        help="path to the run config YAML (default: configs/default.yaml)",
+        help="run config YAML: a path, or a bare name resolved against "
+             "configs/ (e.g. Baseline) (default: configs/default.yaml)",
     )
     parser.add_argument(
         "--set", dest="overrides", action="append", default=[], metavar="KEY=VALUE",

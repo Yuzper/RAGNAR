@@ -60,6 +60,7 @@ print(f"  chunker          : {cfg.get('chunker.type')}  {chunker}")
 print(f"  index_type       : {cfg.get('index.type')}  nlist={cfg.get('index.nlist')}")
 print(f"  m_pq / nbits     : {cfg.get('index.m_pq')} / {cfg.get('index.nbits_pq')}")
 print(f"  train_size       : {cfg.get('index.train_size')}")
+print(f"  train_seed       : {cfg.get('index.train_seed')}")
 print(f"  embed_batch_size : {cfg.get('offline.embed_batch_size')}")
 print(f"  file_chunk_size  : {cfg.get('offline.file_chunk_size')}")
 print(f"  prepend_titles   : {cfg.get('offline.prepend_titles')}")
@@ -69,6 +70,17 @@ print("═" * 54)
 
 loader = WikipediaLoader(db=vector_db, embedder=embedder, chunker=chunker)
 
+# Pass 1. A flat index has no quantiser to train, so the scan would buy nothing.
+if cfg.get("index.type") != "flat":
+    loader.pretrain_index(
+        cfg.get("offline.data_path"),
+        train_size       = cfg.get("index.train_size"),
+        seed             = cfg.get("index.train_seed"),
+        embed_batch_size = cfg.get("offline.embed_batch_size"),
+        prepend_titles   = cfg.get("offline.prepend_titles"),
+    )
+
+# Pass 2.
 vector_db = loader.load_and_index(
     cfg.get("offline.data_path"),
     embed_batch_size = cfg.get("offline.embed_batch_size"),

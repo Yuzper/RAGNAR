@@ -78,6 +78,16 @@ class OfflineBuildTrace:
     # is uncontaminated build cost — safe to report as-is.
     total_ms:       float          # wall-clock total in ms
     chunks_per_sec: float          # embedding throughput
+    # Corpus-wide distributions, accumulated as histograms over every chunk.
+    # These are NOT derivable from `batches`: per-batch percentiles cannot be
+    # combined into a corpus percentile, so these are the only valid source for
+    # a distributional claim about the whole build.
+    # Empty when the index was trained from inside the ingestion loop rather than
+    # from a random pre-pass sample — i.e. on the first train_size vectors the
+    # corpus happened to list first. Its absence is itself a caveat on the run.
+    training:          dict = field(default_factory=dict)
+    chunk_length_dist: dict = field(default_factory=dict)
+    embed_norm_dist:   dict = field(default_factory=dict)
     batches:        list[BatchTrace] = field(default_factory=list)
 
     def to_dict(self) -> dict:
@@ -95,6 +105,9 @@ class OfflineBuildTrace:
             "embed_throughput": {
                 "chunks_per_sec": self.chunks_per_sec,
             },
+            "training":          self.training,
+            "chunk_length_dist": self.chunk_length_dist,
+            "embed_norm_dist":   self.embed_norm_dist,
             "batches": [b.to_dict() for b in self.batches],
         }
 

@@ -59,6 +59,31 @@ GPU_SELECT="${CUDA_VISIBLE_DEVICES:-}"
 GPU_NOTE="all GPUs on node (CUDA_VISIBLE_DEVICES unset)"
 [[ -n "$GPU_SELECT" ]] && GPU_NOTE="CUDA_VISIBLE_DEVICES=$GPU_SELECT"
 
+# CUDA_VISIBLE_DEVICES may hold indices OR UUIDs; nvidia-smi accepts either, but
+# `dcgmi dmon` only ever prints indices. Resolve to indices once here so the
+# dcgmi sampler below can filter at all. Empty means "no restriction" to that
+# sampler, so a failed resolve degrades to whole-node averaging -- wrong, but
+# loudly announced -- rather than to silently empty columns.
+GPU_INDEX_SELECT=""
+if $HAS_SMI && [[ -n "$GPU_SELECT" ]]; then
+  GPU_INDEX_SELECT=$(nvidia-smi --query-gpu=index,uuid --format=csv,noheader,nounits 2>/dev/null \
+    | awk -F',' -v vis="$GPU_SELECT" '
+        BEGIN {
+          nsel = split(vis, want, /,[ ]*/)
+          for (i = 1; i <= nsel; i++) { gsub(/^[ \t]+|[ \t]+$/, "", want[i]); sel[want[i]] = 1 }
+        }
+        {
+          idx = $1; uuid = $2
+          gsub(/^[ \t]+|[ \t]+$/, "", idx); gsub(/^[ \t]+|[ \t]+$/, "", uuid)
+          if ((idx in sel) || (uuid in sel)) out = (out == "" ? idx : out "," idx)
+        }
+        END { print out }')
+  if [[ -z "$GPU_INDEX_SELECT" ]]; then
+    echo "  WARNING: could not resolve CUDA_VISIBLE_DEVICES='$GPU_SELECT' to GPU" \
+         "indices - dcgmi_* columns will average over ALL GPUs on this node."
+  fi
+fi
+
 echo "Monitor starting — interval≈${INTERVAL}s  device=${DEVICE:-none}${DEVICE_NOTE}"
 echo "  iostat=$([ "$HAS_IOSTAT"  = true ] && echo yes || echo no)" \
      " mpstat=$([ "$HAS_MPSTAT"  = true ] && echo yes || echo no)" \
@@ -75,7 +100,7 @@ echo ""
   printf "ram_used_mb,ram_total_mb,ram_avail_mb,ram_used_pct,"
   printf "disk_r_s,disk_w_s,disk_rkB_s,disk_wkB_s,disk_r_await_ms,disk_w_await_ms,disk_util_pct,"
   printf "gpu_mem_used_mb,gpu_mem_total_mb,gpu_mem_free_mb,gpu_util_pct"
-  $HAS_DCGMI && printf ",dcgmi_power_w,dcgmi_gpu_util_pct,dcgmi_nvlink_tx_mbs,dcgmi_nvlink_rx_mbs,dcgmi_pcie_tx_mbs,dcgmi_pcie_rx_mbs"
+  $HAS_DCGMI && printf ",dcgmi_power_w,dcgmi_gpu_util_pct,dcgmi_mem_copy_util_pct,dcgmi_gr_active,dcgmi_sm_active,dcgmi_pcie_tx_bytes,dcgmi_pcie_rx_bytes"
   printf "\n"
 } > "$OUTFILE"
 
@@ -180,12 +205,37 @@ _monitor_loop() {
     fi
     GPU_FIELDS="${GPU_FIELDS:-,,,}"
 
-    # ── DCGMI (optional extended GPU metrics)
+    # ── DCGMI (optional extended GPU metrics), averaged over the GPUs THIS JOB
+    # was allocated — the same restriction the nvidia-smi block above applies.
+    # Unfiltered, dmon reports every GPU on the node and the mean dilutes our one
+    # busy card with the node's idle ones: an exclusive single-GPU job on a
+    # 4-GPU node reads roughly 4x low on power. The dilution factor is the node's
+    # GPU count, so unfiltered columns are not comparable across nodes either.
+    #
+    # dmon prints the entity as two whitespace-separated fields ("GPU" and the
+    # index), so $1="GPU", $2=index, and the -e metrics follow from $3 IN THE
+    # ORDER REQUESTED:
+    #   $3=203  gpu_util         $4=204  mem_copy_util   $5=155  power_usage
+    #   $6=1001 gr_engine_active $7=1002 sm_active
+    #   $8=1009 pcie_tx_bytes    $9=1010 pcie_rx_bytes
     DCGMI_FIELDS=""
     if $HAS_DCGMI; then
       DCGMI_FIELDS=$(dcgmi dmon -e 203,204,155,1001,1002,1009,1010 -c 1 2>/dev/null \
-        | awk 'NR>2 { pw+=$4; gu+=$2; ntx+=$5; nrx+=$6; ptx+=$7; prx+=$8; n++ }
-               END  { if(n) printf ",%.1f,%.1f,%.1f,%.1f,%.1f,%.1f", pw/n,gu/n,ntx/n,nrx/n,ptx/n,prx/n }')
+        | awk -v vis="$GPU_INDEX_SELECT" '
+            BEGIN {
+              nsel = split(vis, want, /,[ ]*/)
+              for (i = 1; i <= nsel; i++) { gsub(/^[ \t]+|[ \t]+$/, "", want[i]); sel[want[i]] = 1 }
+            }
+            $1 == "GPU" && (vis == "" || ($2 in sel)) {
+              gu += $3; mu += $4; pw += $5; gr += $6; sm += $7; ptx += $8; prx += $9; n++
+            }
+            END {
+              if (n) printf ",%.1f,%.1f,%.1f,%.3f,%.3f,%.1f,%.1f", \
+                            pw/n, gu/n, mu/n, gr/n, sm/n, ptx/n, prx/n
+            }')
+      # Seven empty fields, matching the header, so a dmon that returns no rows
+      # shortens no row and shifts no column.
+      DCGMI_FIELDS="${DCGMI_FIELDS:-,,,,,,,}"
     fi
 
     printf "%s,%s,%s,%s,%s%s\n" \

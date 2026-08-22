@@ -1,15 +1,13 @@
 # RAGNAR run configuration.
-#
-# This file is the single source of truth for a run.
-#
 # python -m rag_pipeline.online_phase --config configs/default.yaml \
 #          --set online.nprobe=128 --set online.reranker.type=passthrough
-#
-# ── Shared: defines the vectors ─────────────────────────────────────────
-# Everything under `embedder` and `index`, plus offline.data_path and
-# offline.prepend_titles, is INDEX-DEFINING: it is fingerprinted into the saved
-# index, and an online run whose config disagrees is rejected. Change any of it
-# and you must rebuild.
+
+chunker:
+  type: fixed_word             # fixed_word | fixed_token | sentence | paragraph
+  size: 100
+  overlap: 0
+  min_chunk_words: 10          # a shorter trailing chunk is merged back into its
+
 embedder:
   model: all-MiniLM-L6-v2      # multi-qa-mpnet-base-dot-v1 | all-MiniLM-L6-v2
   # Match to how the model was trained:
@@ -47,31 +45,6 @@ index:
   # not move a loaded index.
   use_gpu: true
 
-# ── Chunker: the component under test ───────────────────────────────────
-# INDEX-DEFINING — every value here changes the vectors, so each configuration
-# needs its own build. Input is the reconstructed article corpus (whole articles
-# with paragraph structure), produced by:
-#   python -m rag_pipeline.build_article_corpus
-#
-# `size` and `overlap` mean different UNITS per type, deliberately kept under one
-# pair of key names so a single sweep grid covers every strategy:
-#   fixed_word   words per chunk       / words carried over
-#   fixed_token  embedder tokens       / tokens carried over
-#   sentence     sentences per chunk   / sentences carried over
-#   paragraph    max words per chunk   / words carried over
-#
-# fixed_word is the fixed-size baseline arm. It does NOT reproduce the DPR
-# psgs_w100 split: measured on the real dump, DPR's passages are 84-87 whitespace
-# words because it counted punctuation-splitting tokens, and no tested
-# tokenization reproduces its boundaries. Use size=85 for the closest length
-# match to DPR; size=100 is simply a round number.
-# overlap must stay below size or the chunk window never advances.
-chunker:
-  type: fixed_word             # fixed_word | fixed_token | sentence | paragraph
-  size: 100
-  overlap: 0
-  min_chunk_words: 10          # a shorter trailing chunk is merged back into its
-                               # predecessor rather than embedded as noise
 
 # ── Offline: building the index ─────────────────────────────────────────
 offline:
@@ -89,8 +62,6 @@ offline:
                                # the tail, not the median. Throughput only.
 
 # ── Online: querying and evaluating ─────────────────────────────────────
-# None of this is index-defining — vary it freely across runs that share one
-# build. nprobe is applied to the loaded index at query time.
 online:
   dataset: data/NQ/Natural-Questions-Filtered.csv
   nprobe: 64                   # IVF cells probed per query; recall/latency knob

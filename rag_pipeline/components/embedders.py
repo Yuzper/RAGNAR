@@ -20,9 +20,26 @@ class SentenceTransformerEmbedder(BaseEmbedder):
     def __init__(self, model_name: str = "all-MiniLM-L6-v2"):
         device = "cuda" if torch.cuda.is_available() else "cpu"
         self.model = SentenceTransformer(model_name, device=device)
+
+        # Half precision on GPU. Tensor cores only engage on 16-bit matmuls, and
+        # torch defaults matmul TF32 to False, so an fp32 model leaves an H100's
+        # fastest units idle for the whole 36M-chunk build. The precision loss is
+        # irrelevant here: these vectors are L2-normalised and then PQ-quantised
+        # to 48 bytes, which discards far more than fp16 does.
+        #
+        # It does perturb the vectors slightly, and it is NOT part of the index
+        # fingerprint, so nothing rejects an online run whose embedder precision
+        # disagrees with the build's. Queries go through this same class, so both
+        # phases move together as long as the flag is not changed mid-sweep.
+        # embed() casts every return path back to float32, so FAISS never sees
+        # fp16.
+        if device == "cuda":
+            self.model.half()
+
         self._model_name = model_name
         self._dim = self._resolve_dim()
-        print(f"[SentenceTransformerEmbedder] Using device: {device}")
+        print(f"[SentenceTransformerEmbedder] Using device: {device}"
+              f"{' (fp16)' if device == 'cuda' else ''}")
 
     def _resolve_dim(self) -> int:
         """
@@ -66,7 +83,18 @@ class SentenceTransformerEmbedder(BaseEmbedder):
                 texts[lo:hi],
                 batch_size=batch_size,
                 convert_to_numpy=True,
-                show_progress_bar=(hi - lo) > 1000,
+                # Off, not thresholded. Every batch clears any threshold worth
+                # setting (~7k chunks at file_chunk_size=1000), so this only ever
+                # meant "always on". tqdm still writes when stderr is not a tty,
+                # and the carriage returns it uses to redraw do not erase in a
+                # file — each bar collapses into one run-on line, so a
+                # full build buries the SLURM .err file under thousands of them.
+                # That file is where a traceback has to be findable in a 24h run
+                # that cannot be resumed, and bisection would add a bar per
+                # sub-range exactly when something has already gone wrong.
+                # Progress already exists at batch granularity: the "Processed N
+                # passages" line in WikipediaLoader.load_and_index.
+                show_progress_bar=False,
             )
             rows.append(np.asarray(out, dtype=np.float32))
             return

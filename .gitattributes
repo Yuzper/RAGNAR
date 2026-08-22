@@ -1,0 +1,23 @@
+# Line endings
+# ------------
+# The cluster is Linux, the dev box is Windows. Without this, whichever machine
+# last wrote a file decides its endings and git records the flip as every line
+# changed - a one-line edit lands as a 1,181-line diff, and a real change hides
+# inside it. Worse for *.job and *.sh: a CRLF shebang makes Linux fail the whole
+# job with "bad interpreter: /bin/bash^M".
+#
+# text=auto lets git classify text vs binary per file; eol=lf pins the
+# working-tree copy to LF on every platform.
+* text=auto eol=lf
+
+# Explicit for anything the pipeline writes or that must never be rewritten.
+# text=auto sniffs for NUL bytes near the start of a file and can misclassify
+# one that has none - which is how a .png ended up looking like a CRLF text file
+# when this repo was surveyed.
+*.png   binary
+*.jpg   binary
+*.zip   binary
+*.pkl   binary
+*.faiss binary
+*.npy   binary
+*.npz   binary
