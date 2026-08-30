@@ -19,10 +19,10 @@ import argparse
 from rag_pipeline.pipeline import RAGPipeline
 from rag_pipeline.components.Chunkers.ChunkerHelper import build_chunker
 from rag_pipeline.components.embedders import SentenceTransformerEmbedder
-from rag_pipeline.components.databases import FAISSDB
+from rag_pipeline.components.Databases.databases_legacy import FAISSDB
 from rag_pipeline.components.retrievers import DenseRetriever
 from rag_pipeline.components.rerankers import CrossEncoderReranker, PassthroughReranker
-from rag_pipeline.components.generators import OllamaGenerator
+from rag_pipeline.components.Generators.generators_legacy import OllamaGenerator
 from rag_pipeline.config import ConfigError, RunConfig, add_config_args, compare_fingerprints
 
 DEFAULT_QUESTIONS = [

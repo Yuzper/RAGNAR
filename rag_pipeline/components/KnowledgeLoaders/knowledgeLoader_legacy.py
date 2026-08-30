@@ -3,9 +3,9 @@ import json
 import time
 from datetime import datetime
 from pathlib import Path
-from .base import BaseKnowledgeLoader, BaseVectorDataBase
+from ..base import BaseKnowledgeLoader, BaseVectorDataBase
 import numpy as np
-from ..pipeline import OfflineBuildTrace, BatchTrace
+from ...pipeline import OfflineBuildTrace, BatchTrace
 
 
 def _batched(records, batch_size: int):

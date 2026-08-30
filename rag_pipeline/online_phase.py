@@ -10,7 +10,7 @@ from rag_pipeline.components.Embedders.SentenceTransformerEmbedder import Senten
 from rag_pipeline.components.Databases.FAISSDB import FAISSDB
 from rag_pipeline.components.retrievers import DenseRetriever
 from rag_pipeline.components.rerankers import CrossEncoderReranker, PassthroughReranker
-from rag_pipeline.components.generators import OllamaGenerator
+from rag_pipeline.components.Generators.generators_legacy import OllamaGenerator
 from rag_pipeline.config import ConfigError, RunConfig, add_config_args, compare_fingerprints
 from rag_pipeline.evaluate import PipelineEvaluator
 

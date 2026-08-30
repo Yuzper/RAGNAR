@@ -21,7 +21,7 @@ embedder:
   metric: cosine
 
 index:
-  database: chroma            # faiss / chroma
+  database: faiss            # faiss / chroma
   chroma:
     collection_name: ragnar
     persist_directory: ./chroma_db

@@ -4,12 +4,12 @@ import datetime as dt
 import json
 import os
 
-from rag_pipeline.components.knowledgeLoader import WikipediaLoader
+from rag_pipeline.components.KnowledgeLoaders.knowledgeLoader_legacy import WikipediaLoader
 from rag_pipeline.components.Chunkers.ChunkerHelper import build_chunker
 from rag_pipeline.components.Embedders.SentenceTransformerEmbedder import SentenceTransformerEmbedder
 from rag_pipeline.components.Embedders.EmbedderHelper import build_embedder
 from rag_pipeline.components.Databases.DatabaseHelper import build_vector_db
-from rag_pipeline.components.databases import FAISSDB
+from rag_pipeline.components.Databases.databases_legacy import FAISSDB
 from rag_pipeline.config import ConfigError, RunConfig, add_config_args
 from rag_pipeline.components.component_registry import get as get_component
 
