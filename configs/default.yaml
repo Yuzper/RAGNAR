@@ -11,6 +11,7 @@
 # index, and an online run whose config disagrees is rejected. Change any of it
 # and you must rebuild.
 embedder:
+  type: sentence_transformer
   model: all-MiniLM-L6-v2      # multi-qa-mpnet-base-dot-v1 | all-MiniLM-L6-v2
   # Match to how the model was trained:
   #   cosine : L2-normalise then inner product. all-MiniLM-L6-v2, *-cos-v1.
@@ -20,16 +21,28 @@ embedder:
   metric: cosine
 
 index:
-  type: ivf_pq                 # flat | ivf_flat | ivf_pq | ivf_sq
-  nlist: 4096                  # IVF centroids; sqrt(N) ~ 6000 for 36M vectors
-  m_pq: 48                     # PQ sub-quantisers (0 disables PQ)
-  nbits_pq: 8                  # bits per sub-quantiser; 8 is standard
-  train_size: 262144           # vectors sampled to train the IVF quantiser
-  # BUILD-TIME ONLY, and deliberately not fingerprinted — GPU vs CPU changes
-  # speed, not the vectors. The online phase restores whatever placement the
-  # saved index recorded and warns if this key disagrees; changing it here does
-  # not move a loaded index.
-  use_gpu: true
+  database: chroma            # faiss / chroma
+  chroma:
+    collection_name: ragnar
+    persist_directory: ./chroma_db
+
+#index:
+#  type: ivf_pq                 # flat | ivf_flat | ivf_pq | ivf_sq
+#  nlist: 4096                  # IVF centroids; sqrt(N) ~ 6000 for 36M vectors
+#  m_pq: 48                     # PQ sub-quantisers (0 disables PQ)
+#  nbits_pq: 8                  # bits per sub-quantiser; 8 is standard
+#  train_size: 262144           # vectors sampled to train the IVF quantiser
+#  # BUILD-TIME ONLY, and deliberately not fingerprinted — GPU vs CPU changes
+#  # speed, not the vectors. The online phase restores whatever placement the
+#  # saved index recorded and warns if this key disagrees; changing it here does
+#  # not move a loaded index.
+#  use_gpu: true
+#  database: faiss            # faiss / chroma
+#  chroma:
+#    collection_name: ragnar
+#    persist_directory: ./chroma_db
+#  faiss:
+#    use_gpu: true
 
 # ── Chunker: the component under test ───────────────────────────────────
 # INDEX-DEFINING — every value here changes the vectors, so each configuration

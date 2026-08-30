@@ -5,9 +5,9 @@ import os
 
 from rag_pipeline.loadDatasetNQ import loadDatasetNQ
 from rag_pipeline.pipeline import RAGPipeline
-from rag_pipeline.components.chunker import build_chunker
-from rag_pipeline.components.embedders import SentenceTransformerEmbedder
-from rag_pipeline.components.databases import FAISSDB
+from rag_pipeline.components.Chunkers.ChunkerHelper import build_chunker
+from rag_pipeline.components.Embedders.SentenceTransformerEmbedder import SentenceTransformerEmbedder
+from rag_pipeline.components.Databases.FAISSDB import FAISSDB
 from rag_pipeline.components.retrievers import DenseRetriever
 from rag_pipeline.components.rerankers import CrossEncoderReranker, PassthroughReranker
 from rag_pipeline.components.generators import OllamaGenerator

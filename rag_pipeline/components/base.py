@@ -3,6 +3,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 import numpy as np
+from rag_pipeline.config import RunConfig
 
 
 @dataclass(slots=True)
@@ -35,6 +36,10 @@ class BaseChunker(ABC):
     @abstractmethod
     def chunk_text(self, texts: list[str], metadatas: list[dict] | None = None) -> list[Chunk]:
         """Convert raw texts into a list of Chunks."""
+
+    @abstractmethod
+    def from_config(cls, config: RunConfig, embedder = None) -> "BaseChunker":
+        """Create a chunker instance from a configuration dictionary."""
 
 
 @dataclass
@@ -90,6 +95,11 @@ class BaseVectorDataBase(ABC):
     def __len__(self) -> int:
         return self.size
 
+    @classmethod
+    @abstractmethod
+    def from_config(cls, config, embedder = None) -> "BaseVectorDataBase":
+        """Create a vector database instance from a configuration dictionary."""
+
 
 # =====================================================================
 # BaseEmbedder
@@ -119,6 +129,10 @@ class BaseEmbedder(ABC):
     @abstractmethod
     def dimension(self) -> int:
         """Dimensionality of the output vectors."""
+
+    @abstractmethod
+    def from_config(cls, config: RunConfig) -> "BaseEmbedder":
+        """Create an embedder instance from a configuration dictionary."""
 
 
 # =====================================================================

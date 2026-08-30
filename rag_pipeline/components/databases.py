@@ -487,7 +487,13 @@ class ChromaDB(BaseVectorDataBase):
     Install: pip install chromadb
     """
 
-    def __init__(self, collection_name: str = "ragnar", persist_dir: str = "./chroma_db"):
+    def __init__(
+            self, 
+            collection_name: str = "ragnar", 
+            persist_dir: str = "./chroma_db",
+            embedder_name: str | None = None,
+            build_config: dict | None = None
+            ):
         try:
             import chromadb
         except ImportError as exc:
@@ -499,8 +505,11 @@ class ChromaDB(BaseVectorDataBase):
             name=collection_name,
             metadata={"hnsw:space": "cosine"},
         )
-        self._persist_dir = persist_dir
         self._collection_name = collection_name
+        self._persist_dir = persist_dir
+        self.embedder_name = embedder_name
+        self.build_config = build_config
+        self.use
         self._id_counter = self._collection.count()
         # Local chunk cache — Chroma stores text but we cache Chunk objects
         self._chunk_cache: list[Chunk] = []

@@ -17,7 +17,7 @@ To EVALUATE a pipeline: sbatch run_rag_online.job <index>
 import argparse
 
 from rag_pipeline.pipeline import RAGPipeline
-from rag_pipeline.components.chunker import build_chunker
+from rag_pipeline.components.Chunkers.ChunkerHelper import build_chunker
 from rag_pipeline.components.embedders import SentenceTransformerEmbedder
 from rag_pipeline.components.databases import FAISSDB
 from rag_pipeline.components.retrievers import DenseRetriever

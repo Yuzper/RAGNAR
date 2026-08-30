@@ -5,10 +5,13 @@ import json
 import os
 
 from rag_pipeline.components.knowledgeLoader import WikipediaLoader
-from rag_pipeline.components.chunker import build_chunker
-from rag_pipeline.components.embedders import SentenceTransformerEmbedder
+from rag_pipeline.components.Chunkers.ChunkerHelper import build_chunker
+from rag_pipeline.components.Embedders.SentenceTransformerEmbedder import SentenceTransformerEmbedder
+from rag_pipeline.components.Embedders.EmbedderHelper import build_embedder
+from rag_pipeline.components.Databases.DatabaseHelper import build_vector_db
 from rag_pipeline.components.databases import FAISSDB
 from rag_pipeline.config import ConfigError, RunConfig, add_config_args
+from rag_pipeline.components.component_registry import get as get_component
 
 parser = argparse.ArgumentParser(description="Build the vector index (offline phase).")
 add_config_args(parser)
@@ -20,34 +23,40 @@ except ConfigError as exc:
     raise SystemExit(f"[config] {exc}")
 
 job_id = os.environ.get("SLURM_JOB_ID") or dt.datetime.now().strftime("%Y%m%d_%H%M%S")
+
+
+
 index_path = f"results/FAISSDB_{job_id}.index"
 
 # ── Build db ─────────────────────────────────────────────────────────
 # The build runs start to finish in a single pass — no checkpointing, no
 # resume. It fits comfortably inside the job's time limit, and leaving
 # checkpoint I/O out keeps the reported build timings clean.
-embedder = SentenceTransformerEmbedder(cfg.get("embedder.model"))
+#embedder = SentenceTransformerEmbedder(cfg.get("embedder.model"))
+embedder = build_embedder(cfg)
 # Built after the embedder: fixed_token sizes chunks in the embedder's own
 # tokenizer, and every strategy is checked against its truncation limit.
 chunker  = build_chunker(cfg, embedder)
 # The metric is persisted with the index and restored at query time, so the
 # online phase always scores the same way the index was built. See the comments
 # in configs/default.yaml for how to match it to the embedder model.
-vector_db = FAISSDB(
-    dimension     = embedder.dimension,
-    metric        = cfg.get("embedder.metric"),
-    use_gpu       = cfg.get("index.use_gpu"),
-    index_type    = cfg.get("index.type"),
-    nlist         = cfg.get("index.nlist"),
-    nprobe        = cfg.get("online.nprobe"),
-    m_pq          = cfg.get("index.m_pq"),
-    nbits_pq      = cfg.get("index.nbits_pq"),
-    train_size    = cfg.get("index.train_size"),
-    embedder_name = cfg.get("embedder.model"),
-    # Written into the index so an online run can prove it is querying an index
-    # built from the configuration it thinks it was.
-    build_config  = cfg.index_fingerprint(),
-)
+#vector_db = FAISSDB(
+#    dimension     = embedder.dimension,
+#    metric        = cfg.get("embedder.metric"),
+#    use_gpu       = cfg.get("index.use_gpu"),
+#    index_type    = cfg.get("index.type"),
+#    nlist         = cfg.get("index.nlist"),
+#    nprobe        = cfg.get("online.nprobe"),
+#    m_pq          = cfg.get("index.m_pq"),
+#    nbits_pq      = cfg.get("index.nbits_pq"),
+#    train_size    = cfg.get("index.train_size"),
+#    embedder_name = cfg.get("embedder.model"),
+#    # Written into the index so an online run can prove it is querying an index
+#    # built from the configuration it thinks it was.
+#    build_config  = cfg.index_fingerprint(),
+#)
+vector_db = build_vector_db(cfg, embedder)
+
 
 print("═" * 54)
 print("  OFFLINE BUILD CONFIG")
@@ -67,7 +76,10 @@ print(f"  job_id           : {job_id}")
 print(f"  output_index     : {index_path}")
 print("═" * 54)
 
-loader = WikipediaLoader(db=vector_db, embedder=embedder, chunker=chunker)
+loader = WikipediaLoader(
+    db=vector_db, 
+    embedder=embedder, 
+    chunker=chunker)
 
 vector_db = loader.load_and_index(
     cfg.get("offline.data_path"),

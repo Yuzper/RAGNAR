@@ -1,15 +1,14 @@
-from .base import BaseEmbedder
-from sentence_transformers import SentenceTransformer
+from rag_pipeline.components.component_registry import register
+from rag_pipeline.components.base import BaseEmbedder
+import os
+import pickle
+from dataclasses import replace
 import numpy as np
+from rag_pipeline.config import RunConfig
+from sentence_transformers import SentenceTransformer
 import torch
 
-# Null-like text values that pass a strip() check but are meaningless
-_NULL_TEXTS = {"null", "none", "nan", "n/a", "na", ""}
-
-def is_null_text(text: str) -> bool:
-    return text.strip().lower() in _NULL_TEXTS
-
-
+@register(kind="embedder", name="sentence_transformer")
 class SentenceTransformerEmbedder(BaseEmbedder):
     """
       - "all-MiniLM-L6-v2"      fast, 384-dim
@@ -23,6 +22,14 @@ class SentenceTransformerEmbedder(BaseEmbedder):
         self._model_name = model_name
         self._dim = self._resolve_dim()
         print(f"[SentenceTransformerEmbedder] Using device: {device}")
+
+    @classmethod
+    def from_config(cls, config: RunConfig) -> "SentenceTransformerEmbedder":
+        """
+        Create a SentenceTransformerEmbedder instance from a configuration dictionary.
+        """
+        model_name = config.get("embedder.model", "all-MiniLM-L6-v2")
+        return cls(model_name=model_name)
 
     def _resolve_dim(self) -> int:
         """

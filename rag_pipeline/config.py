@@ -178,7 +178,7 @@ class RunConfig:
         # fails at launch, not after the embedder has loaded and the job has
         # spent minutes getting to the first batch. Imported locally to keep
         # config.py free of a module-level dependency on the components package.
-        from .components.chunker import CHUNKER_TYPES
+        from .components.Chunkers.ChunkerHelper import CHUNKER_TYPES
 
         chunker_type = self.get("chunker.type")
         if chunker_type not in CHUNKER_TYPES:
