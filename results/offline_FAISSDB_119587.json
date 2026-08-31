@@ -1,0 +1,44 @@
+{
+  "n_passages": 1000,
+  "n_chunks": 17126,
+  "chunk_size_avg": 606.1,
+  "chunk_size_min": 46,
+  "chunk_size_max": 900,
+  "latency_ms": {
+    "embed": 8868.7,
+    "index": 9.1,
+    "total": 9450.9
+  },
+  "embed_throughput": {
+    "chunks_per_sec": 1931.1
+  },
+  "batches": [
+    {
+      "batch_idx": 0,
+      "timestamp": "2026-08-31T04:16:09.897",
+      "is_training_batch": false,
+      "n_passages": 1000,
+      "n_chunks": 17126,
+      "n_skipped": 0,
+      "skip_rate": 0.0,
+      "embed_throughput": {
+        "chunks_per_sec": 1931.1
+      },
+      "chunk_length": {
+        "mean": 606.1,
+        "min": 46,
+        "max": 900,
+        "p5": 515.0,
+        "p95": 696.0
+      },
+      "embed_norm": {
+        "mean": 6.8228,
+        "min": 5.543,
+        "max": 7.1844,
+        "std": 0.1523,
+        "p5": 6.5612,
+        "p95": 7.0003
+      }
+    }
+  ]
+}

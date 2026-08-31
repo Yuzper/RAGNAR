@@ -1,0 +1,66 @@
+{
+  "config_source": "/home/jete/RAGNAR/configs/embed.yaml",
+  "overrides": [],
+  "git_sha": "9dcd8b14922a6dd67b33770077a34d1e8fd2221a",
+  "git_branch": "main",
+  "git_dirty": true,
+  "resolved": {
+    "embedder": {
+      "type": "sentence_transformer",
+      "model": "multi-qa-mpnet-base-dot-v1",
+      "metric": "cosine"
+    },
+    "index": {
+      "database": "faiss",
+      "type": "flat",
+      "nlist": 4096,
+      "m_pq": 48,
+      "nbits_pq": 8,
+      "train_size": 262144,
+      "use_gpu": true,
+      "chroma": {
+        "collection_name": "ragnar",
+        "persist_directory": "./chroma_db"
+      }
+    },
+    "chunker": {
+      "type": "fixed_word",
+      "size": 100,
+      "overlap": 0,
+      "min_chunk_words": 10
+    },
+    "offline": {
+      "data_path": "data/wikiDump/articles_1000.jsonl",
+      "prepend_titles": true,
+      "embed_batch_size": 512,
+      "file_chunk_size": 1000
+    },
+    "online": {
+      "dataset": "data/NQ/Natural-Questions-Filtered.csv",
+      "nprobe": 64,
+      "retriever": {
+        "top_k": 100
+      },
+      "reranker": {
+        "type": "cross_encoder",
+        "model": "cross-encoder/ms-marco-MiniLM-L-6-v2",
+        "top_k": 10
+      },
+      "generator": {
+        "model": "llama3.2",
+        "num_ctx": 8192,
+        "num_predict": 512,
+        "seed": 42
+      },
+      "eval": {
+        "retrieval_k": 10,
+        "max_consecutive_failures": 20,
+        "warmup_queries": 2,
+        "trace_chunk_text": false,
+        "skip_generation": false
+      }
+    }
+  },
+  "job_id": "119587",
+  "index_path": "results/FAISSDB_119587.index"
+}
