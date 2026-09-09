@@ -1,0 +1,73 @@
+# RAGNAR run configuration.
+# This file is the single source of truth for a run.
+#
+# python -m rag_pipeline.online_phase --config configs/baseline.yaml \
+#          --set online.nprobe=128 --set online.reranker.type=passthrough
+#
+# ── Chunker ───────────────────────────────────
+chunker:
+  type: fixed_word             # fixed_word | fixed_token | sentence | paragraph
+  size: 100
+  overlap: 0
+  min_chunk_words: 10          # a shorter trailing chunk is merged back into its predecessor rather than embedded as noise
+#
+# ── Shared: defines the vectors ─────────────────────────────────────────
+embedder:
+  type: sentence_transformer
+  model: multi-qa-mpnet-base-dot-v1      # multi-qa-mpnet-base-dot-v1 | all-MiniLM-L6-v2
+  # Match to how the model was trained:
+  #   cosine : L2-normalise then inner product. all-MiniLM-L6-v2, *-cos-v1.
+  #   dot    : raw inner product. multi-qa-mpnet-base-dot-v1 — these encode
+  #            relevance partly in magnitude, which cosine discards.
+  #   l2     : Euclidean. Rarely right for normalised text embeddings.
+  metric: dot
+
+index:
+  database: faiss              # faiss | chroma — which backend stores the vectors
+
+  # ── FAISS geometry ────────────────────────────────────────────────────
+  type: ivf_pq                   # flat | ivf_flat | ivf_pq | ivf_sq
+  nlist: 32768                  # IVF centroids; sqrt(N) ~ 6000 for 36M vectors
+  m_pq: 48                     # PQ sub-quantisers (0 disables PQ)
+  nbits_pq: 8                  # bits per sub-quantiser; 8 is standard
+  train_size: 4194304           # vectors sampled to train the IVF quantiser
+  use_gpu: true
+
+  chroma:
+    collection_name: ragnar
+    # ROOT for chroma stores, not the store itself. Each offline build writes to <root>/ChromaDB_<job_id>/, mirroring results/ChromaDB_<job_id>.index — a chroma store is a directory.
+    persist_directory: ./chroma_db
+
+# ── Offline: building the index ─────────────────────────────────────────
+offline:
+  data_path: data/wikiDump/articles.jsonl
+  prepend_titles: true         # embed "Title. chunk" — changes the vectors
+  embed_batch_size: 512        # throughput only, not index-defining
+  warmup_rounds: 2
+  file_chunk_size: 1000
+
+# ── Online: querying and evaluating ─────────────────────────────────────
+online:
+  dataset: data/NQ/NQ-open-dev.jsonl     # data/NQ/Natural-Questions-Filtered.csv
+  nprobe: 128                   # IVF cells probed per query; recall/latency knob
+
+  retriever:
+    top_k: 100
+
+  reranker:
+    type: cross_encoder        # cross_encoder | passthrough
+    model: cross-encoder/ms-marco-MiniLM-L-6-v2
+    top_k: 10                  # chunks passed to the generator
+
+  generator:
+    model: llama3.2
+    num_ctx: 8192              # total KV window; hold constant across a sweep
+    num_predict: 512           # max answer tokens, shares num_ctx with prompt
+    seed: 42
+
+  eval:
+    retrieval_k: 10            # cutoff for recall/precision/nDCG/MRR. Must stay well below retriever.top_k.
+    max_consecutive_failures: 20
+    warmup_queries: 2
+    trace_chunk_text: false    # embed passage text in the trace file
+    skip_generation: false

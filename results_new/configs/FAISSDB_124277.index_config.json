@@ -1,0 +1,67 @@
+{
+  "config_source": "/home/jete/RAGNAR/configs/embed2.yaml",
+  "overrides": [],
+  "git_sha": null,
+  "git_branch": null,
+  "git_dirty": null,
+  "resolved": {
+    "chunker": {
+      "type": "fixed_word",
+      "size": 100,
+      "overlap": 0,
+      "min_chunk_words": 10
+    },
+    "embedder": {
+      "type": "sentence_transformer",
+      "model": "multi-qa-mpnet-base-dot-v1",
+      "metric": "dot"
+    },
+    "index": {
+      "database": "faiss",
+      "type": "ivf_pq",
+      "nlist": 32768,
+      "m_pq": 48,
+      "nbits_pq": 8,
+      "train_size": 4194304,
+      "use_gpu": true,
+      "chroma": {
+        "collection_name": "ragnar",
+        "persist_directory": "./chroma_db"
+      }
+    },
+    "offline": {
+      "data_path": "data/wikiDump/articles.jsonl",
+      "prepend_titles": true,
+      "embed_batch_size": 512,
+      "warmup_rounds": 2,
+      "file_chunk_size": 1000
+    },
+    "online": {
+      "dataset": "data/NQ/NQ-open-dev.jsonl",
+      "nprobe": 128,
+      "retriever": {
+        "top_k": 100
+      },
+      "reranker": {
+        "type": "cross_encoder",
+        "model": "cross-encoder/ms-marco-MiniLM-L-6-v2",
+        "top_k": 10
+      },
+      "generator": {
+        "model": "llama3.2",
+        "num_ctx": 8192,
+        "num_predict": 512,
+        "seed": 42
+      },
+      "eval": {
+        "retrieval_k": 10,
+        "max_consecutive_failures": 20,
+        "warmup_queries": 2,
+        "trace_chunk_text": false,
+        "skip_generation": false
+      }
+    }
+  },
+  "job_id": "124277",
+  "index_path": "results/FAISSDB_124277.index"
+}

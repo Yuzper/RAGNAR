@@ -1,0 +1,251 @@
+{
+  "n_passages": 4000,
+  "n_chunks": 45608,
+  "chunk_size_avg": 595.9,
+  "chunk_size_min": 38,
+  "chunk_size_max": 1930,
+  "latency_ms": {
+    "read": 297.7,
+    "chunk": 254.6,
+    "embed": 21069.9,
+    "index": 17.1,
+    "total": 21703.3,
+    "unaccounted": 64.0
+  },
+  "embed_throughput": {
+    "chunks_per_sec": 2164.6
+  },
+  "chunk_throughput": {
+    "chunks_per_sec": 179159.5
+  },
+  "batches": [
+    {
+      "batch_idx": 0,
+      "timestamp": "2026-08-31T16:42:08.680",
+      "is_training_batch": false,
+      "n_passages": 1000,
+      "n_chunks": 17126,
+      "n_skipped": 0,
+      "skip_rate": 0.0,
+      "wall_time": {
+        "read_start": "2026-08-31T16:42:08.441",
+        "read_end": "2026-08-31T16:42:08.680",
+        "chunk_start": "2026-08-31T16:42:08.681",
+        "chunk_end": "2026-08-31T16:42:08.777",
+        "embed_start": "2026-08-31T16:42:08.787",
+        "embed_end": "2026-08-31T16:42:16.110",
+        "index_start": "2026-08-31T16:42:16.122",
+        "index_end": "2026-08-31T16:42:16.130"
+      },
+      "latency_ms": {
+        "read": 239.1,
+        "chunk": 96.8,
+        "embed": 7322.6,
+        "index": 8.0
+      },
+      "embed_throughput": {
+        "chunks_per_sec": 2338.8
+      },
+      "chunk_throughput": {
+        "chunks_per_sec": 176940.9
+      },
+      "chunk_length": {
+        "mean": 606.1,
+        "min": 46,
+        "max": 900,
+        "p5": 515.0,
+        "p95": 696.0
+      },
+      "embed_norm": {
+        "mean": 6.8228,
+        "min": 5.543,
+        "max": 7.1844,
+        "std": 0.1523,
+        "p5": 6.5612,
+        "p95": 7.0003
+      }
+    },
+    {
+      "batch_idx": 1,
+      "timestamp": "2026-08-31T16:42:16.151",
+      "is_training_batch": false,
+      "n_passages": 1000,
+      "n_chunks": 10150,
+      "n_skipped": 0,
+      "skip_rate": 0.0,
+      "wall_time": {
+        "read_start": "2026-08-31T16:42:16.131",
+        "read_end": "2026-08-31T16:42:16.151",
+        "chunk_start": "2026-08-31T16:42:16.152",
+        "chunk_end": "2026-08-31T16:42:16.209",
+        "embed_start": "2026-08-31T16:42:16.215",
+        "embed_end": "2026-08-31T16:42:22.131",
+        "index_start": "2026-08-31T16:42:22.139",
+        "index_end": "2026-08-31T16:42:22.143"
+      },
+      "latency_ms": {
+        "read": 20.1,
+        "chunk": 57.2,
+        "embed": 5915.2,
+        "index": 3.1
+      },
+      "embed_throughput": {
+        "chunks_per_sec": 1715.9
+      },
+      "chunk_throughput": {
+        "chunks_per_sec": 177469.9
+      },
+      "chunk_length": {
+        "mean": 593.8,
+        "min": 53,
+        "max": 1056,
+        "p5": 368.0,
+        "p95": 696.0
+      },
+      "embed_norm": {
+        "mean": 6.83,
+        "min": 5.6376,
+        "max": 7.205,
+        "std": 0.1628,
+        "p5": 6.5008,
+        "p95": 7.0141
+      }
+    },
+    {
+      "batch_idx": 2,
+      "timestamp": "2026-08-31T16:42:22.166",
+      "is_training_batch": false,
+      "n_passages": 1000,
+      "n_chunks": 10789,
+      "n_skipped": 0,
+      "skip_rate": 0.0,
+      "wall_time": {
+        "read_start": "2026-08-31T16:42:22.143",
+        "read_end": "2026-08-31T16:42:22.166",
+        "chunk_start": "2026-08-31T16:42:22.167",
+        "chunk_end": "2026-08-31T16:42:22.225",
+        "embed_start": "2026-08-31T16:42:22.230",
+        "embed_end": "2026-08-31T16:42:26.662",
+        "index_start": "2026-08-31T16:42:26.669",
+        "index_end": "2026-08-31T16:42:26.673"
+      },
+      "latency_ms": {
+        "read": 22.6,
+        "chunk": 58.6,
+        "embed": 4432.2,
+        "index": 3.3
+      },
+      "embed_throughput": {
+        "chunks_per_sec": 2434.3
+      },
+      "chunk_throughput": {
+        "chunks_per_sec": 184019.9
+      },
+      "chunk_length": {
+        "mean": 592.9,
+        "min": 38,
+        "max": 1930,
+        "p5": 393.0,
+        "p95": 690.0
+      },
+      "embed_norm": {
+        "mean": 6.8248,
+        "min": 5.5991,
+        "max": 7.1529,
+        "std": 0.1698,
+        "p5": 6.5076,
+        "p95": 7.0118
+      }
+    },
+    {
+      "batch_idx": 3,
+      "timestamp": "2026-08-31T16:42:26.690",
+      "is_training_batch": false,
+      "n_passages": 1000,
+      "n_chunks": 7543,
+      "n_skipped": 0,
+      "skip_rate": 0.0,
+      "wall_time": {
+        "read_start": "2026-08-31T16:42:26.674",
+        "read_end": "2026-08-31T16:42:26.690",
+        "chunk_start": "2026-08-31T16:42:26.690",
+        "chunk_end": "2026-08-31T16:42:26.732",
+        "embed_start": "2026-08-31T16:42:26.736",
+        "embed_end": "2026-08-31T16:42:30.136",
+        "index_start": "2026-08-31T16:42:30.141",
+        "index_end": "2026-08-31T16:42:30.143"
+      },
+      "latency_ms": {
+        "read": 15.9,
+        "chunk": 42.0,
+        "embed": 3399.9,
+        "index": 2.6
+      },
+      "embed_throughput": {
+        "chunks_per_sec": 2218.6
+      },
+      "chunk_throughput": {
+        "chunks_per_sec": 179788.9
+      },
+      "chunk_length": {
+        "mean": 579.7,
+        "min": 50,
+        "max": 903,
+        "p5": 303.1,
+        "p95": 688.0
+      },
+      "embed_norm": {
+        "mean": 6.8303,
+        "min": 5.525,
+        "max": 7.1572,
+        "std": 0.1613,
+        "p5": 6.5234,
+        "p95": 7.0123
+      }
+    }
+  ],
+  "warmup": {
+    "n_rounds": 2,
+    "n_documents": 31,
+    "started_at": "2026-08-31T16:42:08.082",
+    "ended_at": "2026-08-31T16:42:08.441",
+    "n_chunks": 558,
+    "embed_batch_size": 512,
+    "stages_warmed": [
+      "chunk",
+      "embed"
+    ],
+    "stages_not_warmed": [
+      "read",
+      "index"
+    ],
+    "latency_ms": [
+      {
+        "chunk": 2.921,
+        "embed": 242.833
+      },
+      {
+        "chunk": 1.92,
+        "embed": 110.652
+      }
+    ],
+    "total_ms": 358.7,
+    "failures": null
+  },
+  "wall_time": {
+    "build_start": "2026-08-31T16:42:08.441",
+    "build_end": "2026-08-31T16:42:30.145"
+  },
+  "environment": {
+    "process_started_at": "2026-08-31T16:14:51.381",
+    "embedder_ready_at": "2026-08-31T16:41:02.031",
+    "chunker_ready_at": "2026-08-31T16:41:03.014",
+    "db_ready_at": "2026-08-31T16:42:03.723",
+    "latency_ms": {
+      "import_and_model_load": 1570650.1,
+      "chunker_build": 983.0,
+      "db_import_and_build": 60709.1,
+      "total": 1632342.2
+    }
+  }
+}

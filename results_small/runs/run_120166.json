@@ -1,0 +1,166 @@
+{
+  "pipeline": "RAGPipeline\n  Chunker   : FixedWordChunker(size=100, overlap=0, min_chunk_words=10)\n  Embedder  : SentenceTransformerEmbedder(model='all-MiniLM-L6-v2', dim=384)\n  Store     : FAISSDB(type='flat', metric='cosine', dim=384, size=45,608, gpu=True)\n  Retriever : DenseRetriever(db=FAISSDB(type='flat', metric='cosine', dim=384, size=45,608, gpu=True), retriever_top_k=100)\n  Reranker  : CrossEncoderReranker(model='cross-encoder/ms-marco-MiniLM-L-12-v2')\n  Generator : OllamaGenerator(model='llama3.2', temp=0.0, num_predict=512, num_ctx=8192, seed=42, keep_alive='60m')\nretriever_top_k=100\nreranker_top_k=10",
+  "dataset": "natural_questions",
+  "n_samples": 499,
+  "timestamp": "2026-09-01T03:30:54",
+  "pipeline_start": "2026-09-01T03:24:13.527",
+  "pipeline_end": "2026-09-01T03:30:27.538",
+  "total_elapsed_s": 401.12,
+  "config": {
+    "retriever_top_k": 100,
+    "reranker_top_k": 10,
+    "retrieval_eval_k": 10,
+    "run": {
+      "config_source": "/home/jete/RAGNAR/configs/reranker.yaml",
+      "overrides": [],
+      "git_sha": "9dcd8b14922a6dd67b33770077a34d1e8fd2221a",
+      "git_branch": "main",
+      "git_dirty": true,
+      "resolved": {
+        "chunker": {
+          "type": "fixed_word",
+          "size": 100,
+          "overlap": 0,
+          "min_chunk_words": 10
+        },
+        "embedder": {
+          "type": "sentence_transformer",
+          "model": "all-MiniLM-L6-v2",
+          "metric": "cosine"
+        },
+        "index": {
+          "database": "faiss",
+          "type": "flat",
+          "nlist": 4096,
+          "m_pq": 48,
+          "nbits_pq": 8,
+          "train_size": 262144,
+          "use_gpu": true,
+          "chroma": {
+            "collection_name": "ragnar",
+            "persist_directory": "./chroma_db"
+          }
+        },
+        "offline": {
+          "data_path": "data/wikiDump/articles_4000.jsonl",
+          "prepend_titles": true,
+          "embed_batch_size": 512,
+          "warmup_rounds": 2,
+          "file_chunk_size": 1000
+        },
+        "online": {
+          "dataset": "data/NQ/synthetic-subset-500.csv",
+          "nprobe": 64,
+          "retriever": {
+            "top_k": 100
+          },
+          "reranker": {
+            "type": "cross_encoder",
+            "model": "cross-encoder/ms-marco-MiniLM-L-12-v2",
+            "top_k": 10
+          },
+          "generator": {
+            "model": "llama3.2",
+            "num_ctx": 8192,
+            "num_predict": 512,
+            "seed": 42
+          },
+          "eval": {
+            "retrieval_k": 10,
+            "max_consecutive_failures": 20,
+            "warmup_queries": 2,
+            "trace_chunk_text": false,
+            "skip_generation": false
+          }
+        }
+      },
+      "job_id": "120166",
+      "run_name": "run",
+      "db_path": "results/FAISSDB_120165.index"
+    }
+  },
+  "traces_path": "results/run_120166_traces.jsonl",
+  "warmup": {
+    "n_queries": 2,
+    "queries": [
+      "how many bones are there in an adult human foot",
+      "what year did the berlin wall come down in germany"
+    ],
+    "latency_ms": [
+      {
+        "embed": 332.284,
+        "retrieve": 25.198,
+        "rerank": 79.663,
+        "generate": 8899.713
+      },
+      {
+        "embed": 3.83,
+        "retrieve": 0.44,
+        "rerank": 46.696,
+        "generate": 543.196
+      }
+    ],
+    "failures": [],
+    "total_s": 9.93
+  },
+  "failures": {
+    "n_failed": 0,
+    "failure_rate": 0.0,
+    "by_stage": {},
+    "examples": []
+  },
+  "stages": {
+    "embedding": {
+      "avg_latency_ms": 3.7531685494707676,
+      "p95_latency_ms": 3.817319869995117,
+      "throughput_qps": 266.4415378150308,
+      "dimension": 384
+    },
+    "retrieval": {
+      "avg_latency_ms": 0.43590990957133996,
+      "p95_latency_ms": 0.46634674072265625,
+      "k": 10,
+      "recall_at_k": 0.9539078156312625,
+      "precision_at_k": 0.11122244488977956,
+      "mrr": 0.7084899958647454,
+      "ndcg_at_k": 0.7257319798664522,
+      "pool_recall_at_k": 0.8923858464351214,
+      "top_k_requested": 100,
+      "avg_top_k_returned": 100.0,
+      "min_top_k_returned": 100,
+      "n_short_pools": 0
+    },
+    "reranking": {
+      "avg_latency_ms": 32.70649432180401,
+      "p95_latency_ms": 38.07973861694336,
+      "mrr_before": 0.7084899958647454,
+      "mrr_after": 0.9916499665998664,
+      "mrr_delta": 0.283159970735121,
+      "ndcg_before": 0.7257319798664522,
+      "ndcg_after": 0.9482960333964625,
+      "ndcg_delta": 0.2225640535300103,
+      "recall_before": 0.9539078156312625,
+      "recall_after": 1.0,
+      "recall_delta": 0.04609218436873752,
+      "precision_before": 0.11122244488977956,
+      "precision_after": 0.11943887775551103,
+      "precision_delta": 0.008216432865731468
+    },
+    "generation": {
+      "avg_latency_ms": 709.694356383207,
+      "p95_latency_ms": 1641.1950588226318,
+      "avg_bert_score": 0.13667146606907798,
+      "bert_score_error": null,
+      "bert_score_hash": "roberta-large_L17_no-idf_version=0.3.12(hug_trans=5.15.1)-rescaled",
+      "avg_rouge_l": 0.21784716786901798,
+      "avg_answer_accuracy": 0.7354709418837675,
+      "avg_exact_match": 0.0,
+      "avg_token_f1": 0.21037882050026308,
+      "avg_prompt_tokens": 1493.9218436873748,
+      "avg_completion_tokens": 85.19238476953907,
+      "avg_tokens_per_sec": 185.1608381412854,
+      "avg_ttft_ms": 284.62150961698177,
+      "context_overflow_rate": 0.0
+    }
+  }
+}

@@ -1,11 +1,23 @@
 import csv
 import json
-import time
 from datetime import datetime
 from pathlib import Path
-from ..base import BaseKnowledgeLoader, BaseVectorDataBase
-import numpy as np
-from rag_pipeline import OfflineBuildTrace, BatchTrace
+
+
+def iso_timestamp(t: float) -> str:
+    """
+    Render a time.time() value as an ISO wall-clock string.
+
+    Takes the float rather than calling datetime.now() itself, so a caller
+    derives a stage's timestamp and its duration from ONE clock read. Two reads a
+    few microseconds apart would make a stage's end time disagree with its start
+    plus its own duration — invisible at batch scale, and infuriating when
+    overlaying stage boundaries on a 1 s hardware trace.
+
+    Lives here rather than in either caller because both the loader and the
+    offline entry point stamp the same timeline; two copies could drift.
+    """
+    return datetime.fromtimestamp(t).isoformat(timespec="milliseconds")
 
 
 def _batched(records, batch_size: int):

@@ -30,7 +30,39 @@ from typing import Any
 import yaml
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-DEFAULT_CONFIG_PATH = REPO_ROOT / "configs" / "default.yaml"
+CONFIG_DIR = REPO_ROOT / "configs"
+
+
+def available_configs() -> list[Path]:
+    """Every config file in configs/, for use in error messages."""
+    return sorted(
+        p for p in CONFIG_DIR.glob("*.y*ml") if p.suffix in (".yaml", ".yml")
+    )
+
+
+def resolve_config_path(name: str) -> Path:
+    """
+    Turn whatever the user typed into a config path.
+
+    Accepts a full path (`configs/baseline.yaml`), a bare filename
+    (`baseline.yaml`) or a bare stem (`baseline`) — the last two are looked up in
+    configs/. There is deliberately NO default: a run must name the configuration
+    it is running, so a result can never come from a config nobody chose. That is
+    the same reason the config is recorded in the report rather than described by
+    hand.
+    """
+    given = Path(name)
+    for candidate in (given, CONFIG_DIR / given.name, CONFIG_DIR / f"{given.name}.yaml",
+                      CONFIG_DIR / f"{given.name}.yml"):
+        if candidate.is_file():
+            return candidate
+    found = available_configs()
+    listing = ("\n  ".join(p.name for p in found) if found
+               else "(none — configs/ is empty)")
+    raise ConfigError(
+        f"Config '{name}' not found. Available in {CONFIG_DIR}:\n  {listing}"
+    )
+
 
 # Dotted paths whose values determine the contents of the index. Changing any of
 # these invalidates an existing build; changing anything else does not.
@@ -98,7 +130,12 @@ class RunConfig:
     def load(
         cls, path: str | Path | None = None, overrides: list[str] | None = None,
     ) -> "RunConfig":
-        path = Path(path) if path else DEFAULT_CONFIG_PATH
+        if not path:
+            raise ConfigError(
+                "No config given. Every run must name its configuration explicitly "
+                "— pass --config <name>."
+            )
+        path = resolve_config_path(str(path))
         if not path.exists():
             raise ConfigError(f"Config file not found: {path}")
         with open(path, "r", encoding="utf-8") as f:
@@ -219,6 +256,17 @@ class RunConfig:
                 f"got {warmup!r}"
             )
 
+        # The offline counterpart. Same rule, same reason: 0 is a legal choice
+        # that the build trace then flags, but a negative or non-integer value is
+        # a typo that would otherwise silently disable warm-up via max(0, n).
+        offline_warmup = self.get("offline.warmup_rounds")
+        if (not isinstance(offline_warmup, int) or isinstance(offline_warmup, bool)
+                or offline_warmup < 0):
+            raise ConfigError(
+                f"offline.warmup_rounds must be a non-negative integer, "
+                f"got {offline_warmup!r}"
+            )
+
         rr_type = self.get("online.reranker.type")
         if rr_type not in ("cross_encoder", "passthrough"):
             raise ConfigError(
@@ -305,8 +353,9 @@ def compare_fingerprints(built: dict | None, current: dict) -> list[str]:
 def add_config_args(parser) -> None:
     """Attach --config/--set to an argparse parser (shared by both phases)."""
     parser.add_argument(
-        "--config", default=str(DEFAULT_CONFIG_PATH),
-        help="path to the run config YAML (default: configs/default.yaml)",
+        "--config", required=True, metavar="NAME",
+        help="REQUIRED. The run config: a path, a filename, or a bare name looked "
+             "up in configs/ (e.g. --config baseline)",
     )
     parser.add_argument(
         "--set", dest="overrides", action="append", default=[], metavar="KEY=VALUE",
@@ -325,7 +374,7 @@ def main(argv: list[str] | None = None) -> int:
     """
     import argparse
     parser = argparse.ArgumentParser(prog="python -m rag_pipeline.config")
-    parser.add_argument("config", nargs="?", default=str(DEFAULT_CONFIG_PATH))
+    parser.add_argument("config", help="config path or name (see --config elsewhere)")
     parser.add_argument("--get", help="dotted key to print, e.g. online.generator.model")
     parser.add_argument("--set", dest="overrides", action="append", default=[])
     parser.add_argument("--json", action="store_true", help="print the resolved config as JSON")

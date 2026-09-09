@@ -1,14 +1,13 @@
 #!/bin/bash
-#SBATCH --job-name=rag_offline_%j
+#SBATCH --job-name=rag_offline
 #SBATCH --output=logs/rag_offline_%j.out
 #SBATCH --error=logs/rag_offline_%j.err
-#SBATCH --cpus-per-task=8
+#SBATCH --cpus-per-task=16
 #SBATCH --mem=96G
 #SBATCH --nodes=1
 #SBATCH --gres=gpu:h100:1
 #SBATCH --time=24:00:00
 #SBATCH --partition=scavenge
-#SBATCH --exclusive
 #SBATCH --mail-type=fail,end
 
 # Fail on the first error instead of pressing on. Matches run_rag_online.job and
@@ -17,17 +16,64 @@
 # script by hand for no safety gain.
 set -eo pipefail
 
-# Usage: sbatch run_rag_offline.job [config] [--set k=v ...]
-CONFIG="${1:-configs/default.yaml}"
-if [[ $# -gt 1 ]]; then shift 1; OVERRIDES=("$@"); else OVERRIDES=(); fi
+# The config is REQUIRED and is not defaulted here or in the phase: a build must
+# name the configuration it built from, or the index it writes cannot be traced
+# back to one. Defaulting it also made `sbatch run_rag_offline.job --set k=v`
+# silently read "--set k=v" as the config name.
+USAGE="Usage: sbatch run_rag_offline.job <config> [--set k=v ...]   e.g. baseline"
+CONFIG="${1:?$USAGE}"
+shift 1
+OVERRIDES=("$@")
 
 module --ignore_cache load CUDA/12.6.0
 
 source ~/Miniconda3-py312_25.9.1-3-Linux-x86_64_MAIN/etc/profile.d/conda.sh
 conda activate rag_gpu
 
-python -c "import torch, sentence_transformers, faiss, numpy" \
-    || { echo "rag_gpu env is missing offline dependencies - run run_rag_env.job"; exit 1; }
+# The CUDA and ollama modules are EasyBuild GCCcore/13.3.0 builds, and they put
+# that toolchain's libstdc++ on LD_LIBRARY_PATH ahead of the conda env's own.
+# conda-forge's libfaiss.so is built against GCC 14 and needs CXXABI_1.3.15;
+# GCCcore 13.3.0 only provides up to 1.3.14, so `import faiss` dies with
+#   libstdc++.so.6: version `CXXABI_1.3.15' not found (required by libfaiss.so)
+# unless the env's own lib directory is searched first. Must come AFTER
+# `conda activate` — $CONDA_PREFIX is not set until then.
+export LD_LIBRARY_PATH="$CONDA_PREFIX/lib:$LD_LIBRARY_PATH"
+
+# Presence check only. find_spec RESOLVES each module without EXECUTING it, so this
+# costs milliseconds, where the old `python -c "import torch, sentence_transformers,
+# faiss, numpy"` paid a full import — tens of seconds to minutes for torch and
+# transformers off the conda env on NFS — purely to discover the env was fine.
+# offline_phase imports the same modules for real moments later, so that check bought
+# nothing but a duplicated cost, inside a ~19-minute job whose measured build was ~8s.
+#
+# What this deliberately does NOT catch: a faiss that cannot load its shared library
+# (the CXXABI mismatch handled above), or a torch built for the wrong CUDA that reports
+# no GPU and silently falls back to the CPU. Both need a real import and a launched
+# kernel; both are verified once per env in run_rag_env.job, which is where that cost
+# belongs. A broken-but-present package now surfaces at offline_phase's own import
+# instead — the same failure, a few seconds later, for free.
+python -c "
+import importlib.util as util, sys
+missing = []
+for name in sys.argv[1:]:
+    try:
+        if util.find_spec(name) is None:
+            missing.append(name)
+    except Exception:
+        # A package broken enough that find_spec itself raises is not usable either:
+        # report it as missing rather than dying here with a traceback.
+        missing.append(name)
+if missing:
+    sys.exit('rag_gpu env is missing offline dependencies: ' + ', '.join(missing)
+             + ' - run run_rag_env.job')
+" torch sentence_transformers faiss numpy || exit 1
+
+# Free, and catches from the other side the failure run_rag_env.job warns about: with
+# no GPU visible every embedding pass runs on the CPU, which looks like a slow job
+# rather than a broken one. --gres should guarantee a device, so an empty list here is
+# a real problem and not a scheduling artefact.
+nvidia-smi -L > /dev/null 2>&1 \
+    || { echo "No GPU visible to this job - offline work would silently run on the CPU"; exit 1; }
 
 echo "===== SLURM ENV ====="
 echo "Job ID             : $SLURM_JOB_ID"
@@ -42,7 +88,22 @@ echo ""
 echo "===== RUNNING OFFLINE BUILD ====="
 cd RAGNAR || { echo "Cannot cd to RAGNAR from $PWD - aborting"; exit 1; }
 mkdir -p results
+
+# Check the corpus before paying for the embedder load and the chunker's
+# tokenizer setup — the mirror of the index check in run_rag_online.job. Reading
+# the path through the config module rather than assuming one also proves the
+# config resolves and the overrides parse, which otherwise surfaces only after
+# monitor.sh has started and the model is on the GPU.
+DATA_PATH=$(python -m rag_pipeline.config "$CONFIG" --get offline.data_path "${OVERRIDES[@]}") \
+    || { echo "Could not read offline.data_path from $CONFIG - aborting"; exit 1; }
+if [[ ! -f "$DATA_PATH" ]]; then
+    echo "Corpus not found: $DATA_PATH (in $PWD)"
+    echo "Build it first with: python -m rag_pipeline.build_article_corpus"
+    exit 1
+fi
+
 echo "Config             : $CONFIG"
+echo "Corpus             : $DATA_PATH"
 echo "Overrides          : ${OVERRIDES[*]:-none}"
 ./monitor.sh results/hardware_offline_${SLURM_JOB_ID}.csv \
     python -m rag_pipeline.offline_phase --config "$CONFIG" "${OVERRIDES[@]}"
@@ -50,6 +111,3 @@ echo "Overrides          : ${OVERRIDES[*]:-none}"
 echo ""
 echo "===== DONE ====="
 echo "Finished at: $(date +%Y-%m-%dT%H:%M:%S)"
-echo ""
-echo "To run the online phase against this index:"
-echo "  sbatch run_rag_online.job results/FAISSDB_${SLURM_JOB_ID}.index"

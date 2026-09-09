@@ -29,9 +29,9 @@ class SentenceChunker(DocumentChunker):
         Create a SentenceChunker instance from a configuration dictionary.
         """
         return cls(
-            size            = config.get("chunker.sentence.chunk_size", 512),
-            overlap         = config.get("chunker.sentence.chunk_overlap", 0),
-            min_chunk_words = config.get("chunker.sentence.min_chunk_words", 0),
+            size            = config.get("chunker.size"),
+            overlap         = config.get("chunker.overlap"),
+            min_chunk_words = config.get("chunker.min_chunk_words"),
         )
 
     def warn_if_truncated(self, embedder) -> None:

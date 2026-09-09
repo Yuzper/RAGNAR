@@ -1,5 +1,6 @@
 from rag_pipeline.components.component_registry import register
 from rag_pipeline.components.base import BaseEmbedder
+from rag_pipeline.components.Embedders.EmbedderHelper import is_null_text
 import os
 import pickle
 from dataclasses import replace
@@ -19,9 +20,26 @@ class SentenceTransformerEmbedder(BaseEmbedder):
     def __init__(self, model_name: str = "all-MiniLM-L6-v2"):
         device = "cuda" if torch.cuda.is_available() else "cpu"
         self.model = SentenceTransformer(model_name, device=device)
+
+        # Half precision on GPU. Tensor cores only engage on 16-bit matmuls, and
+        # torch defaults matmul TF32 to False, so an fp32 model leaves an H100's
+        # fastest units idle for the whole 36M-chunk build. The precision loss is
+        # irrelevant here: these vectors are L2-normalised and then PQ-quantised
+        # to 48 bytes, which discards far more than fp16 does.
+        #
+        # It does perturb the vectors slightly, and it is NOT part of the index
+        # fingerprint, so nothing rejects an online run whose embedder precision
+        # disagrees with the build's. Queries go through this same class, so both
+        # phases move together as long as the flag is not changed mid-sweep.
+        # embed() casts every return path back to float32, so FAISS never sees
+        # fp16.
+        if device == "cuda":
+            self.model.half()
+
         self._model_name = model_name
         self._dim = self._resolve_dim()
-        print(f"[SentenceTransformerEmbedder] Using device: {device}")
+        print(f"[SentenceTransformerEmbedder] Using device: {device}"
+              f"{' (fp16)' if device == 'cuda' else ''}")
 
     @classmethod
     def from_config(cls, config: RunConfig) -> "SentenceTransformerEmbedder":

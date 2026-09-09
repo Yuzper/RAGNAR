@@ -1,0 +1,106 @@
+{
+  "pipeline": "RAGPipeline\n  Chunker   : FixedWordChunker(size=100, overlap=0, min_chunk_words=10)\n  Embedder  : SentenceTransformerEmbedder(model='multi-qa-mpnet-base-dot-v1', dim=768)\n  Store     : FAISSDB(type='flat', metric='dot', dim=768, size=45,608, gpu=True)\n  Retriever : DenseRetriever(db=FAISSDB(type='flat', metric='dot', dim=768, size=45,608, gpu=True), retriever_top_k=100)\n  Reranker  : CrossEncoderReranker(model='cross-encoder/ms-marco-MiniLM-L-6-v2')\n  Generator : OllamaGenerator(model='llama3.2', temp=0.0, num_predict=512, num_ctx=8192, seed=42, keep_alive='60m')\nretriever_top_k=100\nreranker_top_k=10",
+  "dataset": "natural_questions",
+  "n_samples": 499,
+  "config": {
+    "retriever_top_k": 100,
+    "reranker_top_k": 10,
+    "retrieval_eval_k": 10,
+    "run": {
+      "config_source": "/home/jete/RAGNAR/configs/embed.yaml",
+      "overrides": [],
+      "git_sha": "9dcd8b14922a6dd67b33770077a34d1e8fd2221a",
+      "git_branch": "main",
+      "git_dirty": true,
+      "resolved": {
+        "chunker": {
+          "type": "fixed_word",
+          "size": 100,
+          "overlap": 0,
+          "min_chunk_words": 10
+        },
+        "embedder": {
+          "type": "sentence_transformer",
+          "model": "multi-qa-mpnet-base-dot-v1",
+          "metric": "dot"
+        },
+        "index": {
+          "database": "faiss",
+          "type": "flat",
+          "nlist": 4096,
+          "m_pq": 48,
+          "nbits_pq": 8,
+          "train_size": 262144,
+          "use_gpu": true,
+          "chroma": {
+            "collection_name": "ragnar",
+            "persist_directory": "./chroma_db"
+          }
+        },
+        "offline": {
+          "data_path": "data/wikiDump/articles_4000.jsonl",
+          "prepend_titles": true,
+          "embed_batch_size": 512,
+          "warmup_rounds": 2,
+          "file_chunk_size": 1000
+        },
+        "online": {
+          "dataset": "data/NQ/synthetic-subset-500.csv",
+          "nprobe": 64,
+          "retriever": {
+            "top_k": 100
+          },
+          "reranker": {
+            "type": "cross_encoder",
+            "model": "cross-encoder/ms-marco-MiniLM-L-6-v2",
+            "top_k": 10
+          },
+          "generator": {
+            "model": "llama3.2",
+            "num_ctx": 8192,
+            "num_predict": 512,
+            "seed": 42
+          },
+          "eval": {
+            "retrieval_k": 10,
+            "max_consecutive_failures": 20,
+            "warmup_queries": 2,
+            "trace_chunk_text": false,
+            "skip_generation": false
+          }
+        }
+      },
+      "job_id": "120175",
+      "run_name": "run",
+      "db_path": "results/FAISSDB_119809.index"
+    }
+  },
+  "warmup": {
+    "n_queries": 2,
+    "queries": [
+      "how many bones are there in an adult human foot",
+      "what year did the berlin wall come down in germany"
+    ],
+    "latency_ms": [
+      {
+        "embed": 599.398,
+        "retrieve": 25.78,
+        "rerank": 433.338,
+        "generate": 9486.312
+      },
+      {
+        "embed": 6.393,
+        "retrieve": 0.498,
+        "rerank": 43.58,
+        "generate": 462.422
+      }
+    ],
+    "failures": [],
+    "total_s": 11.06
+  },
+  "started_at": "2026-09-01T05:07:00",
+  "hostname": "cn11.hpc.itu.dk",
+  "gpu": "NVIDIA H100 NVL",
+  "slurm_job_id": "120175",
+  "cuda_visible_devices": "0"
+}

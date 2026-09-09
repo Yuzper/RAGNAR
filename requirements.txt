@@ -5,8 +5,10 @@ torch
 numpy
 PyYAML>=6.0
 
-# HPC (the rag_gpu conda env) installs faiss-gpu-cu12 — that GPU build is what
-# produced the reported results. faiss-cpu is the local/dev fallback only.
+# HPC (the rag_gpu conda env) installs faiss-gpu from conda-forge — that GPU
+# build is what produced the reported results, and it is NOT the pip
+# faiss-gpu-cu12 wheel, which carries no sm_90 kernels and aborts on the H100
+# nodes. See run_rag_env.job. faiss-cpu is the local/dev fallback only.
 faiss-cpu>=1.8
 chromadb>=0.3
 

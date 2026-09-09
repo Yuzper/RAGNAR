@@ -7,10 +7,11 @@ from rag_pipeline.loadDatasetNQ import loadDatasetNQ
 from rag_pipeline.pipeline import RAGPipeline
 from rag_pipeline.components.Chunkers.ChunkerHelper import build_chunker
 from rag_pipeline.components.Embedders.SentenceTransformerEmbedder import SentenceTransformerEmbedder
-from rag_pipeline.components.Databases.FAISSDB import FAISSDB
-from rag_pipeline.components.retrievers import DenseRetriever
-from rag_pipeline.components.rerankers import CrossEncoderReranker, PassthroughReranker
-from rag_pipeline.components.Generators.generators_legacy import OllamaGenerator
+from rag_pipeline.components.Databases.DatabaseHelper import load_vector_db
+from rag_pipeline.components.Retrievers.DenseRetriever import DenseRetriever
+from rag_pipeline.components.Rerankers.CrossEncoderReranker import CrossEncoderReranker
+from rag_pipeline.components.Rerankers.PassthroughReranker import PassthroughReranker
+from rag_pipeline.components.Generators.OllamaGenerator import OllamaGenerator
 from rag_pipeline.config import ConfigError, RunConfig, add_config_args, compare_fingerprints
 from rag_pipeline.evaluate import PipelineEvaluator
 
@@ -34,6 +35,7 @@ print("═" * 54)
 print(cfg.describe())
 print(f"  run_name         : {run_name}")
 print(f"  db_path          : {args.db}")
+print(f"  database         : {cfg.get('index.database')}")
 print(f"  dataset          : {cfg.get('online.dataset')}")
 print(f"  embedder         : {cfg.get('embedder.model')}")
 print(f"  nprobe           : {cfg.get('online.nprobe')}")
@@ -55,7 +57,9 @@ if cfg.get("online.eval.skip_generation"):
 print("═" * 54)
 
 # ── Load DB (must come before retriever construction) ──────────────
-vector_db = FAISSDB.load(args.db)
+# Resolved from index.database, not hard-coded: naming a concrete class here is
+# what made the online phase FAISS-only no matter what the config said.
+vector_db = load_vector_db(cfg, args.db)
 
 # Guard against query/index drift. The embedder check catches the case that
 # breaks loudly — a dimension mismatch crashes search. The fingerprint check
@@ -82,17 +86,26 @@ if vector_db.build_config is None:
           "only the embedder name could be verified.")
 
 # nprobe is a query-time knob. Keeping it out of the fingerprint is what lets it
-# be swept across runs that share a single build.
-vector_db.set_nprobe(cfg.get("online.nprobe"))
+# be swept across runs that share a single build. It is an IVF concept, so a
+# backend without one says so loudly rather than letting the config key — and the
+# nprobe printed in the header above — read as if it had been applied.
+if hasattr(vector_db, "set_nprobe"):
+    vector_db.set_nprobe(cfg.get("online.nprobe"))
+else:
+    print(f"WARNING: online.nprobe={cfg.get('online.nprobe')} is IGNORED — "
+          f"{type(vector_db).__name__} has no IVF probe list. It is recorded in the "
+          f"run provenance but did not affect this run.")
 
-# index.use_gpu is a BUILD-TIME setting: FAISSDB.load restores the placement
-# recorded in the pkl, so setting it in the config for an online run has no
-# effect. Say so rather than letting the key read as if it worked.
-if cfg.get("index.use_gpu") != vector_db.use_gpu:
-    print(f"WARNING: config index.use_gpu={cfg.get('index.use_gpu')} is IGNORED online — "
-          f"this index was loaded with use_gpu={vector_db.use_gpu}, restored from the build. "
-          f"Rebuild the index to change it.")
-print(f"  use_gpu (effective): {vector_db.use_gpu}")
+# index.use_gpu is a BUILD-TIME setting: the backend's load() restores the
+# placement recorded at build time, so setting it in the config for an online run
+# has no effect. Say so rather than letting the key read as if it worked. Only
+# FAISS records a placement at all.
+if hasattr(vector_db, "use_gpu"):
+    if cfg.get("index.use_gpu") != vector_db.use_gpu:
+        print(f"WARNING: config index.use_gpu={cfg.get('index.use_gpu')} is IGNORED online — "
+              f"this index was loaded with use_gpu={vector_db.use_gpu}, restored from the build. "
+              f"Rebuild the index to change it.")
+    print(f"  use_gpu (effective): {vector_db.use_gpu}")
 
 # ── Components ─────────────────────────────────────────────────────
 embedder  = SentenceTransformerEmbedder(cfg.get("embedder.model"))

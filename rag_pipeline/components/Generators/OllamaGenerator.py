@@ -1,9 +1,9 @@
-from .base import BaseGenerator, Chunk
-from ..metrics import tokens_per_second
+from rag_pipeline.components.base import BaseGenerator, Chunk
+from rag_pipeline.metrics import tokens_per_second
 from ollama import ChatResponse
 import time, ollama, logging
 import urllib.request
-from GeneratorsHelper import _wait_for_ollama, _MAX_RETRIES, _RETRY_BACKOFF, _OLLAMA_URL, _OLLAMA_TIMEOUT, _DEFAULT_NUM_CTX
+from rag_pipeline.components.Generators.GeneratorsHelper import _wait_for_ollama, _MAX_RETRIES, _RETRY_BACKOFF, _OLLAMA_URL, _OLLAMA_TIMEOUT, _DEFAULT_NUM_CTX
 
 class OllamaGenerator(BaseGenerator):
     """

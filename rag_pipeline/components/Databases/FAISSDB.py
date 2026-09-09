@@ -3,9 +3,78 @@ from rag_pipeline.components.base import BaseEmbedder, BaseVectorDataBase, Chunk
 from rag_pipeline.config import RunConfig
 import os
 import pickle
+import subprocess
+import sys
 from dataclasses import replace
 import numpy as np
 import faiss
+
+# ── GPU kernel probe ───────────────────────────────────────────────────────────
+# Run in a CHILD process, once per run, and cached here.
+_PROBE_SOURCE = """import faiss, numpy as np
+res = faiss.StandardGpuResources()
+x = np.random.rand(16, 8).astype("float32")
+q = np.random.rand(1, 8).astype("float32")
+for factory in (faiss.IndexFlatL2, faiss.IndexFlatIP):
+    idx = faiss.index_cpu_to_gpu(res, 0, factory(8))
+    idx.add(x)
+    idx.search(q, 4)
+"""
+
+_gpu_probe_cache: tuple[bool, str] | None = None
+
+
+def _gpu_kernels_usable(timeout: float = 300.0) -> tuple[bool, str]:
+    """
+    Answer "can this faiss build actually launch kernels on this GPU?" without
+    risking the calling process. Returns (usable, detail).
+
+    faiss.get_num_gpus() only counts devices; it says nothing about whether the
+    installed binary contains cubins for their compute capability. A build made
+    for sm_80 finds an H100 (sm_90), reports 1 GPU, and then dies on the first
+    kernel launch with
+
+        Faiss assertion 'err__ == cudaSuccess' failed ... CUDA error 209
+        no kernel image is available for execution on the device
+
+    That is FAISS_ASSERT -> abort() inside C++: a SIGABRT, not a Python
+    exception, so no try/except around index_cpu_to_gpu can catch it and no
+    CPU fallback below can run. The only safe way to ask the question is in a
+    child process whose death costs nothing.
+
+    Set RAGNAR_FAISS_GPU_PROBE=0 to skip the probe and assume the GPU works.
+    """
+    global _gpu_probe_cache
+    if _gpu_probe_cache is not None:
+        return _gpu_probe_cache
+    if os.environ.get("RAGNAR_FAISS_GPU_PROBE", "1").strip().lower() in ("0", "false", "no"):
+        _gpu_probe_cache = (True, "probe skipped via RAGNAR_FAISS_GPU_PROBE")
+        return _gpu_probe_cache
+    try:
+        proc = subprocess.run(
+            [sys.executable, "-c", _PROBE_SOURCE],
+            capture_output=True, text=True, timeout=timeout,
+        )
+    except subprocess.TimeoutExpired:
+        _gpu_probe_cache = (False, f"probe did not finish within {timeout:.0f}s")
+        return _gpu_probe_cache
+    except Exception as exc:
+        # The probe could not be started at all. "Unknown" is not "broken":
+        # fall through to the normal path rather than forcing a CPU build.
+        _gpu_probe_cache = (True, f"probe could not be started ({exc}) — GPU untested")
+        return _gpu_probe_cache
+    if proc.returncode == 0:
+        _gpu_probe_cache = (True, "probe ok")
+    else:
+        # A negative code is a POSIX signal — SIGABRT (6) is the FAISS_ASSERT
+        # path, and the one this probe exists for.
+        rc  = proc.returncode
+        why = f"killed by signal {-rc}" if rc < 0 else f"exit={rc}"
+        tail = (" | ".join((proc.stderr or "").strip().splitlines()[-4:])
+                or "no stderr output")
+        _gpu_probe_cache = (False, f"{why}: {tail}")
+    return _gpu_probe_cache
+
 
 @register(kind="database", name="faiss")
 class FAISSDB(BaseVectorDataBase):
@@ -28,7 +97,6 @@ class FAISSDB(BaseVectorDataBase):
         train_size: int  = 262_144,      # IVF: vectors to buffer before auto-training
         embedder_name: str | None = None, # model that produced the vectors (persisted for query-time validation)
         build_config: dict | None = None, # index-defining config, persisted for query-time validation
-        index_path: str | None = None,    # directory to persist the index (if any)
         ):
         _VALID = {"flat", "ivf_flat", "ivf_pq", "ivf_sq"}
         if index_type not in _VALID:
@@ -73,28 +141,60 @@ class FAISSDB(BaseVectorDataBase):
         # that lands hours into a build with no resume path.
         self._gpu_res = None
 
+        # Verify GPU usability ONCE, here — not lazily on first use. _to_gpu is
+        # not reached until after training for the IVF types, which is hours of
+        # embedding into a build that has no resume path; a faiss build with no
+        # kernels for this GPU aborts the process there and takes the whole job
+        # with it. Checking in __init__ makes that failure cost seconds.
+        if self.use_gpu:
+            self._require_gpu()
+
         # Flat indexes are ready immediately; IVF starts as untrained CPU index
         cpu_index   = self._build_cpu_index()
         self._index = self._to_gpu(cpu_index) if index_type == "flat" else cpu_index
 
     @classmethod
-    def from_config(cls, config: RunConfig, embedder: BaseEmbedder) -> "FAISSDB":
+    def from_config(
+        cls,
+        config: RunConfig,
+        embedder: BaseEmbedder,
+        job_id: str | None = None,
+    ) -> "FAISSDB":
         """
-        Create a FAISSDB instance from a configuration dictionary.
+        Create a FAISSDB instance from a run config.
+
+        `job_id` is accepted but unused — FAISS writes one file, and the offline
+        phase already names it per job. Only Chroma, whose store is a directory
+        shared across builds, needs the id here. Kept in the signature so the
+        caller can build either backend through the same call.
+
+        The geometry keys live at `index.*` — the same paths
+        config.INDEX_DEFINING_KEYS fingerprints and both phases print. Reading
+        them from anywhere else would let the fingerprint record one geometry
+        while the index was built with another.
+
+        `dimension` comes from the embedder, not the config: it is a property of
+        the loaded model, and a config key for it could disagree with the model
+        actually in use — which FAISS would only surface much later, as a shape
+        error mid-build.
         """
+        if embedder is None:
+            raise ValueError(
+                "FAISSDB.from_config needs the embedder to read its output dimension; "
+                "got None. Build the embedder first and pass it to build_vector_db()."
+            )
         return cls(
-            dimension       = config.get("embedder.dimension"),
+            dimension       = embedder.dimension,
             metric          = config.get("embedder.metric"),
-            use_gpu         = config.get("index.faiss.use_gpu"),
-            index_type      = config.get("index.faiss.type"),
-            nlist           = config.get("index.faiss.nlist"),
+            use_gpu         = config.get("index.use_gpu"),
+            index_type      = config.get("index.type"),
+            nlist           = config.get("index.nlist"),
             nprobe          = config.get("online.nprobe"),
-            m_pq            = config.get("index.faiss.m_pq"),
-            nbits_pq        = config.get("index.faiss.nbits_pq"),
-            train_size      = config.get("index.faiss.train_size"),
+            m_pq            = config.get("index.m_pq"),
+            nbits_pq        = config.get("index.nbits_pq"),
+            train_size      = config.get("index.train_size"),
             embedder_name   = config.get("embedder.model"),
             build_config    = config.index_fingerprint(),
-            index_path      = config.get("index.faiss.index_path", "./faiss_db"),
         )
 
     def _build_cpu_index(self) -> faiss.Index:
@@ -139,18 +239,55 @@ class FAISSDB(BaseVectorDataBase):
     
     # ── GPU helpers ────────────────────────────────────────────────────────────
 
-    def _to_gpu(self, cpu_index: faiss.Index) -> faiss.Index:
+    def _require_gpu(self) -> None:
         """
-        Move a trained CPU index to GPU 0.  Falls back to CPU on failure.
-        Always updates self._is_on_gpu so the rest of the class has a reliable
-        signal for whether index_gpu_to_cpu is needed.
+        Verify the GPU can actually run faiss kernels, and abort the run if it
+        cannot.
+
+        This deliberately does NOT fall back to CPU. index.use_gpu=true is a
+        statement about how the numbers are to be produced: a CPU build has
+        different timings, and for IVF a differently-clustered index, so a run
+        that quietly downgrades yields a row that cannot be compared with the
+        rest of the sweep — while looking perfectly healthy in the log. Failing
+        here costs seconds; discovering it in the results costs the sweep.
+
+        A CPU run is still available, but only by asking for one:
+            --set index.use_gpu=false
         """
-        if not self.use_gpu:
-            self._is_on_gpu = False
-            return cpu_index
         ngpu = self._faiss.get_num_gpus()
         if ngpu == 0:
-            print("[FAISSDB] No GPU found — using CPU index")
+            raise RuntimeError(
+                "[FAISSDB] index.use_gpu=true but faiss sees no GPU. Check that the "
+                "job requested one (#SBATCH --gres=gpu:h100:1) and that this faiss "
+                "is a GPU build. To run on CPU deliberately: --set index.use_gpu=false"
+            )
+        usable, detail = _gpu_kernels_usable()
+        if usable:
+            print(f"[FAISSDB] GPU check passed ({ngpu} GPU(s), {detail})")
+            return
+        raise RuntimeError(
+            f"[FAISSDB] index.use_gpu=true but this faiss build cannot run kernels on "
+            f"the {ngpu} GPU(s) present — the probe died: {detail}\n"
+            f"  This is an architecture mismatch: the binary carries no cubins for this "
+            f"device's compute capability (H100 = sm_90).\n"
+            f"  Fix the environment — run_rag_env.job installs conda-forge faiss-gpu and "
+            f"verifies it can launch a kernel.\n"
+            f"  Refusing to fall back to CPU: it would change the build timings, and for "
+            f"IVF the centroids, making this run incomparable to the rest of the sweep.\n"
+            f"  To run on CPU deliberately: --set index.use_gpu=false"
+        )
+
+    def _to_gpu(self, cpu_index: faiss.Index) -> faiss.Index:
+        """
+        Move a trained CPU index to GPU 0. Raises if that fails — see
+        _require_gpu for why this does not fall back to CPU. Always updates
+        self._is_on_gpu so the rest of the class has a reliable signal for
+        whether index_gpu_to_cpu is needed.
+
+        Device availability is not rechecked here: __init__ already established
+        it, and every call reaches this point through that constructor.
+        """
+        if not self.use_gpu:
             self._is_on_gpu = False
             return cpu_index
         try:
@@ -160,13 +297,18 @@ class FAISSDB(BaseVectorDataBase):
             if self._gpu_res is None:
                 self._gpu_res = self._faiss.StandardGpuResources()
             gpu_index = self._faiss.index_cpu_to_gpu(self._gpu_res, 0, cpu_index)
-            print(f"[FAISSDB] Index moved to GPU 0 ({ngpu} GPU(s) available)")
+            print("[FAISSDB] Index moved to GPU 0")
             self._is_on_gpu = True
             return gpu_index
         except Exception as exc:
-            print(f"[FAISSDB] GPU transfer failed ({exc}) — falling back to CPU")
             self._is_on_gpu = False
-            return cpu_index
+            raise RuntimeError(
+                f"[FAISSDB] index.use_gpu=true but moving the index to GPU 0 failed: "
+                f"{exc}\n"
+                f"  Not falling back to CPU — that would silently change this run's "
+                f"timings (and, for IVF, its centroids).\n"
+                f"  To run on CPU deliberately: --set index.use_gpu=false"
+            ) from exc
 
     def _as_cpu_index(self) -> faiss.Index:
         """

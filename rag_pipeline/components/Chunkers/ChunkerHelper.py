@@ -34,16 +34,65 @@ Two invariants every strategy must hold:
     round-trip through a tokenizer's decoder. `fixed_token` is the trap.
 """
 
+import importlib
 import re
 
 from rag_pipeline.components.base import BaseChunker, BaseEmbedder, Chunk
 from rag_pipeline.components.component_registry import get as get_component
+
+# Every strategy the config may name. config.py validates `chunker.type` against
+# this at LOAD time, before the embedder is constructed, so a bad sweep value
+# fails at launch rather than minutes in — which is why it is a plain tuple here
+# and not read off the registry: the registry is only populated once the modules
+# below have been imported, and config validation must not require that.
+# Kept honest by _load_chunker_plugins, which checks the two agree.
+CHUNKER_TYPES = ("fixed_word", "fixed_token", "sentence", "paragraph")
+
+# Registration happens as an import side effect of @register, so nothing is in
+# the registry until the module defining it has been imported. Doing that here,
+# lazily, rather than in the entry points is what keeps `Unknown chunker
+# 'fixed_word'. Available: []` from depending on which file an entry point
+# happened to import.
+_CHUNKER_MODULES = (
+    "rag_pipeline.components.Chunkers.FixedWordChunker",
+    "rag_pipeline.components.Chunkers.FixedTokenChunker",
+    "rag_pipeline.components.Chunkers.SentenceChunker",
+    "rag_pipeline.components.Chunkers.ParagraphChunker",
+)
+_plugins_loaded = False
+
+
+def _load_chunker_plugins() -> None:
+    """
+    Import the chunker implementations so their @register decorators run.
+
+    Called from build_chunker rather than at module scope: each implementation
+    imports THIS module for DocumentChunker, so a module-level import here would
+    be circular.
+    """
+    global _plugins_loaded
+    if _plugins_loaded:
+        return
+    for module in _CHUNKER_MODULES:
+        importlib.import_module(module)
+    _plugins_loaded = True
+
+    from rag_pipeline.components.component_registry import _REGISTRIES
+    registered = set(_REGISTRIES.get("chunker", {}))
+    if registered != set(CHUNKER_TYPES):
+        raise RuntimeError(
+            f"CHUNKER_TYPES {sorted(CHUNKER_TYPES)} disagrees with the registered "
+            f"chunkers {sorted(registered)} — config validation and the factory "
+            f"would accept different sets. Update CHUNKER_TYPES."
+        )
+
 
 # ── factory ────────────────────────────────────────────────────────────────────
 def build_chunker(cfg, embedder=None) -> BaseChunker:
     """
     Construct the chunker named by the run config.
     """
+    _load_chunker_plugins()
     ChunkClass = get_component("chunker", cfg.get("chunker.type"))
     chunker = ChunkClass.from_config(cfg, embedder)
     chunker.warn_if_truncated(embedder)

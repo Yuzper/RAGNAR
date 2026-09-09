@@ -18,11 +18,12 @@ import argparse
 
 from rag_pipeline.pipeline import RAGPipeline
 from rag_pipeline.components.Chunkers.ChunkerHelper import build_chunker
-from rag_pipeline.components.embedders import SentenceTransformerEmbedder
-from rag_pipeline.components.Databases.databases_legacy import FAISSDB
-from rag_pipeline.components.retrievers import DenseRetriever
-from rag_pipeline.components.rerankers import CrossEncoderReranker, PassthroughReranker
-from rag_pipeline.components.Generators.generators_legacy import OllamaGenerator
+from rag_pipeline.components.Embedders.SentenceTransformerEmbedder import SentenceTransformerEmbedder
+from rag_pipeline.components.Databases.DatabaseHelper import load_vector_db
+from rag_pipeline.components.Retrievers.DenseRetriever import DenseRetriever
+from rag_pipeline.components.Rerankers.CrossEncoderReranker import CrossEncoderReranker
+from rag_pipeline.components.Rerankers.PassthroughReranker import PassthroughReranker
+from rag_pipeline.components.Generators.OllamaGenerator import OllamaGenerator
 from rag_pipeline.config import ConfigError, RunConfig, add_config_args, compare_fingerprints
 
 DEFAULT_QUESTIONS = [
@@ -43,7 +44,7 @@ try:
 except ConfigError as exc:
     raise SystemExit(f"[config] {exc}")
 
-vector_db = FAISSDB.load(args.db)
+vector_db = load_vector_db(cfg, args.db)
 
 # Same drift guard as the online phase — a demo run against the wrong index
 # would look perfectly plausible and teach you the wrong thing.
@@ -54,7 +55,8 @@ if diffs:
         + "\n  ".join(diffs)
     )
 
-vector_db.set_nprobe(cfg.get("online.nprobe"))
+if hasattr(vector_db, "set_nprobe"):   # IVF-only knob; see online_phase.py
+    vector_db.set_nprobe(cfg.get("online.nprobe"))
 
 reranker_type = cfg.get("online.reranker.type")
 embedder = SentenceTransformerEmbedder(cfg.get("embedder.model"))

@@ -53,7 +53,7 @@ class ParagraphChunker(DocumentChunker):
         Create a ParagraphChunker instance from a configuration dictionary.
         """
         return cls(
-            size            = config.get("chunker.paragraph.chunk_size", 512),
-            overlap         = config.get("chunker.paragraph.chunk_overlap", 0),
-            min_chunk_words = config.get("chunker.paragraph.min_chunk_words", 0),
+            size            = config.get("chunker.size"),
+            overlap         = config.get("chunker.overlap"),
+            min_chunk_words = config.get("chunker.min_chunk_words"),
         )

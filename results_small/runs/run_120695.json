@@ -1,0 +1,166 @@
+{
+  "pipeline": "RAGPipeline\n  Chunker   : FixedWordChunker(size=100, overlap=0, min_chunk_words=10)\n  Embedder  : SentenceTransformerEmbedder(model='all-MiniLM-L6-v2', dim=384)\n  Store     : ChromaDB(collection='ragnar', size=45608)\n  Retriever : DenseRetriever(db=ChromaDB(collection='ragnar', size=45608), retriever_top_k=100)\n  Reranker  : CrossEncoderReranker(model='cross-encoder/ms-marco-MiniLM-L-6-v2')\n  Generator : OllamaGenerator(model='llama3.2', temp=0.0, num_predict=512, num_ctx=8192, seed=42, keep_alive='60m')\nretriever_top_k=100\nreranker_top_k=10",
+  "dataset": "natural_questions",
+  "n_samples": 499,
+  "timestamp": "2026-09-01T06:06:45",
+  "pipeline_start": "2026-09-01T05:57:23.556",
+  "pipeline_end": "2026-09-01T06:06:22.152",
+  "total_elapsed_s": 562.71,
+  "config": {
+    "retriever_top_k": 100,
+    "reranker_top_k": 10,
+    "retrieval_eval_k": 10,
+    "run": {
+      "config_source": "/home/jete/RAGNAR/configs/vector_db.yaml",
+      "overrides": [],
+      "git_sha": "9dcd8b14922a6dd67b33770077a34d1e8fd2221a",
+      "git_branch": "main",
+      "git_dirty": true,
+      "resolved": {
+        "chunker": {
+          "type": "fixed_word",
+          "size": 100,
+          "overlap": 0,
+          "min_chunk_words": 10
+        },
+        "embedder": {
+          "type": "sentence_transformer",
+          "model": "all-MiniLM-L6-v2",
+          "metric": "cosine"
+        },
+        "index": {
+          "database": "chroma",
+          "type": "flat",
+          "nlist": 4096,
+          "m_pq": 48,
+          "nbits_pq": 8,
+          "train_size": 262144,
+          "use_gpu": true,
+          "chroma": {
+            "collection_name": "ragnar",
+            "persist_directory": "./chroma_db"
+          }
+        },
+        "offline": {
+          "data_path": "data/wikiDump/articles_4000.jsonl",
+          "prepend_titles": true,
+          "embed_batch_size": 512,
+          "warmup_rounds": 2,
+          "file_chunk_size": 1000
+        },
+        "online": {
+          "dataset": "data/NQ/synthetic-subset-500.csv",
+          "nprobe": 64,
+          "retriever": {
+            "top_k": 100
+          },
+          "reranker": {
+            "type": "cross_encoder",
+            "model": "cross-encoder/ms-marco-MiniLM-L-6-v2",
+            "top_k": 10
+          },
+          "generator": {
+            "model": "llama3.2",
+            "num_ctx": 8192,
+            "num_predict": 512,
+            "seed": 42
+          },
+          "eval": {
+            "retrieval_k": 10,
+            "max_consecutive_failures": 20,
+            "warmup_queries": 2,
+            "trace_chunk_text": false,
+            "skip_generation": false
+          }
+        }
+      },
+      "job_id": "120695",
+      "run_name": "run",
+      "db_path": "results/ChromaDB_119810.index"
+    }
+  },
+  "traces_path": "results/run_120695_traces.jsonl",
+  "warmup": {
+    "n_queries": 2,
+    "queries": [
+      "how many bones are there in an adult human foot",
+      "what year did the berlin wall come down in germany"
+    ],
+    "latency_ms": [
+      {
+        "embed": 374.037,
+        "retrieve": 1329.67,
+        "rerank": 71.706,
+        "generate": 10044.842
+      },
+      {
+        "embed": 3.808,
+        "retrieve": 1387.176,
+        "rerank": 42.365,
+        "generate": 849.613
+      }
+    ],
+    "failures": [],
+    "total_s": 14.1
+  },
+  "failures": {
+    "n_failed": 0,
+    "failure_rate": 0.0,
+    "by_stage": {},
+    "examples": []
+  },
+  "stages": {
+    "embedding": {
+      "avg_latency_ms": 3.7765526819324684,
+      "p95_latency_ms": 3.8361549377441406,
+      "throughput_qps": 264.7917516904063,
+      "dimension": 384
+    },
+    "retrieval": {
+      "avg_latency_ms": 342.2575990757149,
+      "p95_latency_ms": 507.3235034942627,
+      "k": 10,
+      "recall_at_k": 0.9498997995991983,
+      "precision_at_k": 0.11022044088176353,
+      "mrr": 0.7044819798326812,
+      "ndcg_at_k": 0.7218337459311548,
+      "pool_recall_at_k": 0.8882813212826179,
+      "top_k_requested": 100,
+      "avg_top_k_returned": 100.0,
+      "min_top_k_returned": 100,
+      "n_short_pools": 0
+    },
+    "reranking": {
+      "avg_latency_ms": 26.548372241920365,
+      "p95_latency_ms": 32.17506408691406,
+      "mrr_before": 0.7044819798326812,
+      "mrr_after": 0.9874749498997996,
+      "mrr_delta": 0.2829929700671183,
+      "ndcg_before": 0.7218337459311548,
+      "ndcg_after": 0.9442240341942059,
+      "ndcg_delta": 0.22239028826305107,
+      "recall_before": 0.9498997995991983,
+      "recall_after": 0.9959919839679359,
+      "recall_delta": 0.04609218436873752,
+      "precision_before": 0.11022044088176353,
+      "precision_after": 0.1186372745490982,
+      "precision_delta": 0.008416833667334672
+    },
+    "generation": {
+      "avg_latency_ms": 703.6453989560237,
+      "p95_latency_ms": 1615.9756183624268,
+      "avg_bert_score": 0.1345341760128128,
+      "bert_score_error": null,
+      "bert_score_hash": "roberta-large_L17_no-idf_version=0.3.12(hug_trans=5.15.1)-rescaled",
+      "avg_rouge_l": 0.22004497043991683,
+      "avg_answer_accuracy": 0.7234468937875751,
+      "avg_exact_match": 0.0,
+      "avg_token_f1": 0.2112788425095552,
+      "avg_prompt_tokens": 1492.0781563126252,
+      "avg_completion_tokens": 82.28056112224449,
+      "avg_tokens_per_sec": 184.14557422296753,
+      "avg_ttft_ms": 290.2217102433016,
+      "context_overflow_rate": 0.0
+    }
+  }
+}

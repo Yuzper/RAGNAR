@@ -17,7 +17,20 @@ class BatchTrace:
     n_chunks:                int    # chunks produced after chunking
     n_skipped:               int    # chunks dropped before embedding
     skip_rate:               float  # n_skipped / n_chunks_before_skip (0.0 if none)
+
+    # Per-stage latency for this batch. read + chunk + embed + index accounts for
+    # essentially all of a batch's wall time, so the build no longer reports a
+    # remainder that has to be attributed by subtraction. `read_ms` is time spent
+    # inside _iter_documents producing this batch (file read, JSON parse,
+    # grouping) — see the t_prev comment in WikipediaLoader for how a generator's
+    # cost is measured from outside it.
+    read_ms:                 float
+    chunk_ms:                float
+    embed_ms:                float
+    index_ms:                float
+
     embed_throughput_chunks_per_sec: float
+    chunk_throughput_chunks_per_sec: float
 
     # Chunk character-length distribution (computed before skips are removed)
     chunk_length_mean: float
@@ -34,6 +47,15 @@ class BatchTrace:
     embed_norm_p5:    float
     embed_norm_p95:   float
 
+    # ISO wall-clock at every stage boundary, so a batch can be drawn against the
+    # hardware CSV instead of reconstructed by adding durations to `timestamp`.
+    # That reconstruction drifts: chunk_end -> embed_start and embed_end ->
+    # index_start are real, untimed gaps (list building, the length and norm
+    # arrays, the skip filter), and they are the per-batch share of
+    # `latency_ms.unaccounted`. Here those gaps are visible rather than smeared
+    # into the stage that follows them.
+    wall_time:        dict = field(default_factory=dict)
+
     def to_dict(self) -> dict:
         return {
             "batch_idx":         self.batch_idx,
@@ -43,8 +65,18 @@ class BatchTrace:
             "n_chunks":          self.n_chunks,
             "n_skipped":         self.n_skipped,
             "skip_rate":         self.skip_rate,
+            "wall_time":         self.wall_time,
+            "latency_ms": {
+                "read":  self.read_ms,
+                "chunk": self.chunk_ms,
+                "embed": self.embed_ms,
+                "index": self.index_ms,
+            },
             "embed_throughput": {
                 "chunks_per_sec": self.embed_throughput_chunks_per_sec,
+            },
+            "chunk_throughput": {
+                "chunks_per_sec": self.chunk_throughput_chunks_per_sec,
             },
             "chunk_length": {
                 "mean": self.chunk_length_mean,
@@ -72,13 +104,32 @@ class OfflineBuildTrace:
     chunk_size_avg: float
     chunk_size_min: int
     chunk_size_max: int
+    read_ms:        float          # total corpus read + parse time in ms
+    # The chunker is a benchmarked component in its own right — the whole point of
+    # the chunk.yaml arm — so its cost is measured directly rather than inferred
+    # from total_ms minus the stages that happened to have timers.
+    chunk_ms:       float          # total chunking time in ms
     embed_ms:       float          # total embedding time in ms
     index_ms:       float          # total indexing time in ms
     # The build runs start to finish in one pass with no checkpointing, so this
     # is uncontaminated build cost — safe to report as-is.
     total_ms:       float          # wall-clock total in ms
     chunks_per_sec: float          # embedding throughput
+    chunk_chunks_per_sec: float    # chunking throughput, same denominator
     batches:        list[BatchTrace] = field(default_factory=list)
+    # Raw stage latencies of the discarded warm-up rounds, or None when warm-up
+    # was disabled. Deliberately NOT folded into latency_ms: warm-up work is
+    # thrown away, so counting it in the build total would inflate exactly the
+    # number it exists to protect. See WikipediaLoader._warmup.
+    warmup:         dict | None = None
+    # ISO wall-clock for the measured build window. total_ms is a duration and
+    # cannot be placed on the hardware CSV's time axis on its own; these two can.
+    wall_time:      dict = field(default_factory=dict)
+    # Everything BEFORE the build: interpreter start, the torch /
+    # sentence_transformers import, model load and CUDA init, then the faiss or
+    # chroma import. Supplied by the entry point, which is the only place that
+    # can see those boundaries — the loader does not exist yet when they happen.
+    environment:    dict | None = None
 
     def to_dict(self) -> dict:
         return {
@@ -88,14 +139,33 @@ class OfflineBuildTrace:
             "chunk_size_min": self.chunk_size_min,
             "chunk_size_max": self.chunk_size_max,
             "latency_ms": {
+                "read":  self.read_ms,
+                "chunk": self.chunk_ms,
                 "embed": self.embed_ms,
                 "index": self.index_ms,
                 "total": self.total_ms,
+                # What the four timed stages do not cover: db.finalize(), the
+                # trace bookkeeping itself, and interpreter overhead. Reported
+                # rather than left implicit, so a remainder that starts growing
+                # is visible instead of being silently absorbed into total.
+                "unaccounted": round(
+                    self.total_ms - (self.read_ms + self.chunk_ms
+                                     + self.embed_ms + self.index_ms), 1),
             },
             "embed_throughput": {
                 "chunks_per_sec": self.chunks_per_sec,
             },
+            "chunk_throughput": {
+                "chunks_per_sec": self.chunk_chunks_per_sec,
+            },
             "batches": [b.to_dict() for b in self.batches],
+            # Top-level rather than a key inside latency_ms: everything in
+            # latency_ms sums towards `total`, and warm-up must not. A run whose
+            # warmup is null is a run whose batch 0 absorbed every first-call
+            # cost — the offline counterpart of the online warm-up caveat.
+            "warmup": self.warmup,
+            "wall_time": self.wall_time,
+            "environment": self.environment,
         }
 
 @dataclass

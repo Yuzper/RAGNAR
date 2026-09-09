@@ -23,7 +23,7 @@ class FixedWordChunker(DocumentChunker):
         Create a FixedWordChunker instance from a configuration dictionary.
         """
         return cls(
-            size            = config.get("chunker.fixed_word.chunk_size", 512),
-            overlap         = config.get("chunker.fixed_word.chunk_overlap", 0),
-            min_chunk_words = config.get("chunker.fixed_word.min_chunk_words", 0),
+            size            = config.get("chunker.size"),
+            overlap         = config.get("chunker.overlap"),
+            min_chunk_words = config.get("chunker.min_chunk_words"),
         )

@@ -55,9 +55,9 @@ class FixedTokenChunker(DocumentChunker):
         
         return cls(
             tokenizer       = tokenizer,
-            size            = config.get("chunker.fixed_token.chunk_size", 512),
-            overlap         = config.get("chunker.fixed_token.chunk_overlap", 0),
-            min_chunk_words = config.get("chunker.fixed_token.min_chunk_words", 0),
+            size            = config.get("chunker.size"),
+            overlap         = config.get("chunker.overlap"),
+            min_chunk_words = config.get("chunker.min_chunk_words"),
         )
 
     def warn_if_truncated(self, embedder) -> None:

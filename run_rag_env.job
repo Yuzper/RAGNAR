@@ -5,7 +5,7 @@
 #SBATCH --cpus-per-task=1
 #SBATCH --mem=32G
 #SBATCH --nodes=1
-#SBATCH --nodelist=cn[19]
+#SBATCH --gres=gpu:h100:1
 #SBATCH --time=07:30:00
 #SBATCH --partition=scavenge
 #SBATCH --mail-type=end,fail
@@ -15,7 +15,7 @@ set -eo pipefail
 module load CUDA/12.6.0
 module load ollama/0.6.0-GCCcore-13.3.0-CUDA-12.6.0
 
-CONDA=/home/json/Miniconda3-py312_25.9.1-3-Linux-x86_64_MAIN
+CONDA=/home/jete/Miniconda3-py312_25.9.1-3-Linux-x86_64_MAIN
 
 # Source conda so activate works in a batch script
 source "$CONDA/etc/profile.d/conda.sh"
@@ -30,13 +30,58 @@ fi
 
 conda activate rag_gpu
 
+# The CUDA and ollama modules are EasyBuild GCCcore/13.3.0 builds, and they put
+# that toolchain's libstdc++ on LD_LIBRARY_PATH ahead of the conda env's own.
+# conda-forge's libfaiss.so is built against GCC 14 and needs CXXABI_1.3.15;
+# GCCcore 13.3.0 only provides up to 1.3.14, so `import faiss` dies with
+#   libstdc++.so.6: version `CXXABI_1.3.15' not found (required by libfaiss.so)
+# unless the env's own lib directory is searched first. Must come AFTER
+# `conda activate` — $CONDA_PREFIX is not set until then.
+export LD_LIBRARY_PATH="$CONDA_PREFIX/lib:$LD_LIBRARY_PATH"
+
+echo ""
+echo "===== INSTALLING FAISS (conda-forge) ====="
+# faiss comes from conda-forge, NOT pip. The pip wheel this env used to install,
+# faiss-gpu-cu12, ships no cubins for sm_90, so on the H100 nodes faiss reported
+# a GPU and then aborted the process on its first kernel launch:
+#   Faiss assertion 'err__ == cudaSuccess' failed ... CUDA error 209
+#   no kernel image is available for execution on the device
+# conda-forge's faiss-gpu is built for sm_90. It goes in BEFORE pip so pip
+# resolves numpy against faiss's requirement rather than the reverse, and any
+# leftover pip faiss is removed so it cannot shadow the conda one in
+# site-packages.
+# Order matters: the pip wheel goes FIRST. Both packages install into
+# site-packages/faiss, so uninstalling pip's copy after conda's would delete
+# files conda had already overwritten and leave a half-gutted faiss behind.
+pip uninstall -y faiss-gpu-cu12 faiss-cpu || true
+conda install -y -c conda-forge "faiss-gpu>=1.9"
+
+echo ""
+echo "===== INSTALLING TORCH (cu126) ====="
+# torch MUST come from the cu126 index, not plain PyPI. PyPI's default torch is
+# built for CUDA 13.0, but these nodes run driver 560.35.03, which tops out at
+# CUDA 12.6, so that build cannot initialise CUDA at all:
+#   The NVIDIA driver on your system is too old (found version 12060)
+# torch then reports no GPU and runs every embedding pass on the CPU - a 24h
+# offline build that looks slow rather than broken. The driver version is the
+# ceiling; pick the torch build that fits under it.
+# Installed BEFORE the bulk pip call so the sentence-transformers/transformers
+# dependency pulls see torch as already satisfied and leave this build alone.
+# pip counts a bare "torch" as satisfied by ANY installed torch, including the
+# cu130 build already in this env, so --index-url on its own is a no-op on a
+# re-run. Uninstall first unless the installed build is already cu126.
+if python -c "import torch, sys; sys.exit(0 if '+cu126' in torch.__version__ else 1)" 2>/dev/null; then
+    echo "torch $(python -c 'import torch; print(torch.__version__)') is already a cu126 build, skipping"
+else
+    pip uninstall -y torch || true
+    pip install torch --index-url https://download.pytorch.org/whl/cu126
+fi
+
 echo ""
 echo "===== INSTALLING PACKAGES ====="
 pip install \
-    torch \
     sentence-transformers \
     transformers \
-    faiss-gpu-cu12 \
     ollama \
     numpy \
     pandas \
@@ -71,20 +116,90 @@ for name, why in required:
         print(f"  FAIL  {name:22s} {type(exc).__name__}: {exc}  ({why})")
         failed.append(name)
 
-# GPU visibility is reported, not enforced: this job requests no --gres, so a
-# missing GPU here says nothing about the compute nodes the real jobs land on.
-# Add "#SBATCH --gres=gpu:h100:1" above if you want these two lines to mean something.
+# Reported separately, one try per library: importing both together meant a
+# broken faiss swallowed the torch GPU lines too, hiding whether torch could
+# see the GPU at all.
 try:
-    import torch, faiss
+    import torch
+    print(f"  info  torch built for CUDA      = {torch.version.cuda}")
     print(f"  info  torch.cuda.is_available() = {torch.cuda.is_available()}")
+    if torch.cuda.is_available():
+        print(f"  info  torch device              = {torch.cuda.get_device_name(0)} "
+              f"sm_{''.join(str(x) for x in torch.cuda.get_device_capability(0))}")
+    else:
+        # Hard failure, not a warning. A pip torch built for a newer CUDA than
+        # the driver supports reports no GPU and silently runs everything on the
+        # CPU - which looks like a slow job, not a broken one. This job requests
+        # a GPU, so "no GPU" here is a broken env, never a scheduling artefact.
+        # Compare torch's CUDA above with the driver version from nvidia-smi
+        # below; if the driver is lower, reinstall torch from the matching
+        # download.pytorch.org/whl/cuXXX index.
+        sys.exit("torch sees NO GPU - every embedding pass would run on the CPU")
+except Exception as exc:
+    print(f"  info  torch GPU check unavailable: {exc}")
+
+try:
+    import faiss
     print(f"  info  faiss.get_num_gpus()      = {faiss.get_num_gpus()}")
 except Exception as exc:
-    print(f"  info  GPU check unavailable: {exc}")
+    print(f"  info  faiss GPU check unavailable: {exc}")
 
 if failed:
     sys.exit(f"Missing packages: {', '.join(failed)}")
 print("All required imports OK")
 PY
+
+echo ""
+echo "===== DRIVER ====="
+# The driver's CUDA version is the ceiling for every runtime in this env. A pip
+# torch built for a higher one falls back to the CPU without erroring.
+nvidia-smi --query-gpu=name,driver_version --format=csv,noheader || echo "(nvidia-smi unavailable)"
+
+echo ""
+echo "===== TORCH GPU KERNEL CHECK ====="
+# Mirrors the faiss check below. is_available() only says the driver and runtime
+# agreed to talk; it does not prove a kernel can run. This allocates on the
+# device, launches a matmul and copies the result back - the sequence a torch
+# built against the wrong CUDA fails. Under set -e that failure ends THIS job in
+# seconds, instead of surfacing as a mysteriously CPU-speed offline build.
+python -c "
+import torch
+print('torch built for CUDA', torch.version.cuda, '| device', torch.cuda.get_device_name(0))
+x = torch.randn(512, 512, device='cuda')
+y = (x @ x).sum().item()
+assert y == y, 'matmul produced NaN'
+print('torch GPU kernels OK on', torch.cuda.device_count(), 'device(s)')
+"
+
+echo ""
+echo "===== FAISS GPU KERNEL CHECK ====="
+# Diagnostic only - it must never be what fails this job, so every step here is
+# allowed to come up empty. The GPU code lives in a separate library from the CPU
+# one, and which file depends on the build: a _swigfaiss_gpu*.so beside the
+# python module, or libfaiss_gpu*.so up in the env's lib dir. Pointing cuobjdump
+# at the CPU _swigfaiss.so just reports "does not contain device code".
+echo "faiss cubin architectures:"
+FAISS_DIR="$(python -c 'import faiss, os; print(os.path.dirname(faiss.__file__))')"
+FAISS_GPU_LIB="$(ls "$FAISS_DIR"/_swigfaiss_gpu*.so "$FAISS_DIR"/../../../libfaiss_gpu*.so 2>/dev/null | head -n1 || true)"
+if [ -n "$FAISS_GPU_LIB" ]; then
+    cuobjdump --list-elf "$FAISS_GPU_LIB" \
+        | grep -oE 'sm_[0-9]+' | sort -u | sed 's/^/  /' || echo "  (cuobjdump unavailable - skipped)"
+else
+    echo "  (no separate faiss GPU library found - skipped)"
+fi
+# get_num_gpus() counts devices; it cannot tell you the binary holds kernels for
+# them. This launches a real one. Under `set -e` a faiss without sm_90 support
+# fails THIS job, in seconds, instead of the offline build hours later - and the
+# failure is a SIGABRT out of C++, not a Python exception, so the only way to
+# catch it is to let a separate process die on it.
+python -c "
+import faiss, numpy as np
+res = faiss.StandardGpuResources()
+idx = faiss.index_cpu_to_gpu(res, 0, faiss.IndexFlatL2(8))
+idx.add(np.random.rand(16, 8).astype('float32'))
+idx.search(np.random.rand(1, 8).astype('float32'), 4)
+print('faiss GPU kernels OK on', faiss.get_num_gpus(), 'device(s)')
+"
 
 # --- Record what was actually installed ---
 echo ""
