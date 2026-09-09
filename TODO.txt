@@ -21,6 +21,8 @@ How can we use this for future?
 
 
 
+
+
 ----------------
 ewma
 ----------------
